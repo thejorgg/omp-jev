@@ -18,12 +18,14 @@
 	"files": [
 		"src",
 		"agents",
-		"examples"
+		"examples",
+		"bin"
 	],
 	"scripts": {
 		"test": "bun test",
 		"check": "tsc --noEmit",
-		"format": "biome format --write src test examples package.json tsconfig.json"
+		"format": "biome format --write src bin test examples package.json tsconfig.json",
+		"config": "bun bin/omp-jev.ts config"
 	},
 	"peerDependencies": {
 		"@oh-my-pi/pi-coding-agent": ">=18.2.3"
@@ -41,5 +43,8 @@
 	},
 	"engines": {
 		"bun": ">=1.3.14"
+	},
+	"bin": {
+		"omp-jev": "./bin/omp-jev.ts"
 	}
 }

@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -6,12 +5,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { evaluate, validateQuestion } from "./client.js";
-import {
-	DEFAULT_CONFIG,
-	loadConfig,
-	loadRules,
-	parseConfig,
-} from "./config.js";
+import { loadConfig, loadRules } from "./config.js";
 import {
 	hasActionableTodos,
 	makeState,
@@ -27,9 +21,17 @@ import {
 	safetyQuestion,
 	thinkingQuestion,
 } from "./decisions.js";
-import { editDocument } from "./editor.js";
+import { editDocument, readOptional } from "./editor.js";
+import { configPaths, type ConfigName, type ConfigScope } from "./paths.js";
+import {
+	documentValidator,
+	initialDocument,
+	initializeDocuments,
+	loadOrchestrator,
+} from "./settings.js";
+import { JevOrchestrator } from "./orchestrator.js";
 import { NativeRuleGate } from "./native-rules.js";
-import { matchRules, parseRules } from "./rules.js";
+import { matchRules } from "./rules.js";
 import type {
 	Answer,
 	Evaluate,
@@ -51,19 +53,15 @@ interface Session {
 	previousReminders?: boolean;
 	warnings: Set<string>;
 	lastDecision?: string;
+	orchestrating?: boolean;
 }
 
 export default function jevExtension(pi: ExtensionAPI): void {
 	const sessions = new Map<string, Promise<Session>>();
 	let enabledOverride: boolean | undefined;
 	let reminderOwner: Session | undefined;
-	const paths = (ctx: ExtensionContext) => ({
-		config: [
-			join(pi.pi.getAgentDir(), "jev.json"),
-			join(ctx.cwd, ".omp", "jev.json"),
-		],
-		rules: [join(pi.pi.getAgentDir(), ".jevrules"), join(ctx.cwd, ".jevrules")],
-	});
+	const paths = (ctx: ExtensionContext) =>
+		configPaths(ctx.cwd, pi.pi.getAgentDir());
 	const key = (ctx: ExtensionContext) =>
 		`${ctx.sessionManager.getSessionId()}\0${ctx.cwd}`;
 	const get = (ctx: ExtensionContext): Promise<Session> => {
@@ -117,7 +115,10 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	const syncReminders = (session: Session): void => {
 		const settings = pi.pi.settings;
 		if (reminderOwner && reminderOwner !== session) restoreReminders();
-		if (enabled(session) && session.config.recovery.enabled) {
+		if (
+			enabled(session) &&
+			(session.config.recovery.enabled || session.orchestrating)
+		) {
 			if (session.previousReminders === undefined)
 				session.previousReminders = settings.get("todo.reminders");
 			settings.override("todo.reminders", false);
@@ -202,6 +203,51 @@ export default function jevExtension(pi: ExtensionAPI): void {
 			{ deliverAs: "nextTurn" },
 		);
 
+	const orchestrator: JevOrchestrator = new JevOrchestrator(pi, {
+		config: async (ctx) => ({
+			main: (await get(ctx)).config,
+			orchestrator: await loadOrchestrator(paths(ctx).orchestrator),
+		}),
+		enabled: async (ctx) => enabled(await get(ctx)),
+		notice: (ctx, message) => notice(ctx, message),
+		changed: async (ctx) => {
+			const session = await get(ctx);
+			session.orchestrating = orchestrator.isActive(ctx);
+			syncReminders(session);
+		},
+	});
+	// Typed TUI input cancels at submission time; RPC prompt/steer/follow_up never reach the
+	// input event. Their deliveries surface as user-role message_start events in every mode,
+	// while Jev's own stage guidance travels as agent-attributed custom messages, so delivery
+	// of real user content releases the run and clears settled suppression without the
+	// orchestrator cancelling itself.
+	pi.on("input", async (event, ctx) => {
+		if (!/^\/jev(?:\s|$)/.test(event.text.trim()))
+			await orchestrator.userInput(ctx);
+	});
+	pi.on("message_start", async (event, ctx) => {
+		const message = event.message;
+		if (
+			message.role !== "user" ||
+			message.synthetic ||
+			message.attribution === "agent"
+		)
+			return;
+		await orchestrator.userInput(ctx);
+	});
+	pi.on("session_before_switch", async (_event, ctx) => {
+		await orchestrator.stop(ctx, "paused before session switch");
+	});
+	pi.on("session_before_branch", async (_event, ctx) => {
+		await orchestrator.stop(ctx, "paused before branching");
+	});
+	pi.on("session_before_tree", async (_event, ctx) => {
+		await orchestrator.stop(ctx, "paused before navigation");
+	});
+	pi.on("agent_end", async (event, ctx) => {
+		await orchestrator.onAgentEnd(ctx, event);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			const session = await get(ctx);
@@ -221,6 +267,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
+		await orchestrator.stop(ctx, "stopped at shutdown", true);
 		const loading = sessions.get(key(ctx));
 		sessions.delete(key(ctx));
 		if (!loading) return;
@@ -246,7 +293,11 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		if (!enabled(session)) return;
 		const rules = selectRules(session, "before_agent_start");
 		const questions = ruleQuestions(rules);
-		if (session.config.thinking.enabled && ctx.model?.reasoning)
+		if (
+			session.config.thinking.enabled &&
+			ctx.model?.reasoning &&
+			!orchestrator.isActive(ctx)
+		)
 			questions.thinking = thinkingQuestion;
 		if (!Object.keys(questions).length) return;
 		try {
@@ -394,6 +445,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
+		orchestrator.noteToolResult(ctx, event.isError === true);
 		if (enabledOverride === false) return;
 		const session = await get(ctx);
 		if (!enabled(session)) return;
@@ -426,6 +478,8 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_stop", async (event, ctx) => {
+		// One owner per stop boundary: never race the new controller with legacy recovery.
+		if (orchestrator.handlesStop(ctx)) return orchestrator.onStop(ctx, event);
 		if (enabledOverride === false) return;
 		const session = await get(ctx);
 		if (
@@ -584,7 +638,9 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		const [config, rules] = await Promise.all([
 			loadConfig(locations.config),
 			loadRules(locations.rules),
+			loadOrchestrator(locations.orchestrator),
 		]);
+		await orchestrator.stop(ctx, "paused for configuration reload");
 		restoreReminders();
 		const next: Session = {
 			config,
@@ -601,15 +657,44 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	};
 	pi.registerCommand("jev", {
 		description:
-			"Jev routing: status, config [project], rules [global], reload, enable, disable, test",
+			"Jev: plan/run <goal>, stop, status, config [all|orchestrator] [project], rules [project], init, paths, reload, enable, disable, test",
 		handler: async (args, ctx) => {
-			const [command = "status", scope] = args
+			const [command = "status", scope, extraScope] = args
 				.trim()
 				.split(/\s+/)
 				.filter(Boolean);
 			try {
 				const locations = paths(ctx);
+				if (command === "plan" || command === "run") {
+					await orchestrator.start(
+						ctx,
+						args.trim().slice(command.length).trim(),
+						command === "plan",
+					);
+					return;
+				}
+				if (command === "stop") {
+					await orchestrator.stop(
+						ctx,
+						"routing stopped; interrupt OMP to cancel an in-flight worker",
+					);
+					output(ctx, orchestrator.status(ctx));
+					return;
+				}
+				if (command === "paths" || command === "init") {
+					const target: ConfigScope =
+						scope === "project" ? "project" : "global";
+					if (command === "init") await initializeDocuments(locations, target);
+					output(
+						ctx,
+						Object.entries(locations[target])
+							.map(([name, path]) => `${name}: ${path}`)
+							.join("\n"),
+					);
+					return;
+				}
 				if (command === "disable") {
+					await orchestrator.stop(ctx, "disabled");
 					enabledOverride = false;
 					restoreReminders();
 					output(
@@ -619,26 +704,72 @@ export default function jevExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				if (command === "config" || command === "rules") {
-					const config = command === "config";
-					const path = config
-						? locations.config[scope === "project" ? 1 : 0]
-						: locations.rules[scope === "global" ? 0 : 1];
-					const saved = await editDocument(
-						ctx,
-						path,
-						config ? DEFAULT_CONFIG : { version: 1, rules: [] },
-						config ? parseConfig : parseRules,
-					);
+					const tokens = [scope, extraScope].filter(Boolean);
+					if (
+						tokens.some(
+							(token) =>
+								![
+									"main",
+									"all",
+									"orchestrator",
+									"rules",
+									"global",
+									"project",
+								].includes(token!),
+						)
+					)
+						throw new Error(
+							"Use /jev config [main|rules|orchestrator|all] [project]",
+						);
+					const target: ConfigScope = tokens.includes("project")
+						? "project"
+						: "global";
+					const name =
+						command === "rules"
+							? "rules"
+							: (tokens.find((token) =>
+									["main", "rules", "orchestrator", "all"].includes(token!),
+								) ?? "main");
+					const names: ConfigName[] =
+						name === "all"
+							? ["main", "rules", "orchestrator"]
+							: [name as ConfigName];
+					if (orchestrator.isActive(ctx))
+						throw new Error(
+							"Use /jev stop before editing settings, then interrupt any in-flight worker.",
+						);
+					let saved = false;
+					for (const selected of names) {
+						const path = locations[target][selected];
+						// Malformed existing files must still be repairable from this interface.
+						const initial =
+							(await readOptional(path)) === undefined
+								? await initialDocument(selected, locations, target)
+								: {};
+						saved =
+							(await editDocument(
+								ctx,
+								path,
+								initial,
+								documentValidator(selected),
+							)) || saved;
+					}
 					if (saved) {
 						await reload(ctx);
-						output(ctx, `Jev saved and reloaded ${path}`);
+						output(
+							ctx,
+							"Jev configuration, rules and orchestrator settings saved and reloaded.",
+						);
 					}
 					return;
 				}
 				if (command === "reload") {
 					enabledOverride = undefined;
 					await reload(ctx);
-					output(ctx, "Jev configuration and rules reloaded.");
+					output(
+						ctx,
+						"Jev configuration, rules and orchestrator settings reloaded.",
+					);
 					return;
 				}
 				const session = await get(ctx);
@@ -673,7 +804,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 				if (command !== "status") {
 					output(
 						ctx,
-						"/jev status | config [project] | rules [global] | reload | enable | disable | test. Editors support Ctrl+G ($VISUAL/$EDITOR). .jevrules accepts arbitrary Choice/Noul/Score questions, event scopes, thresholds and messages.",
+						"/jev plan <goal> | run [goal] | stop | status | config [all|main|rules|orchestrator] [project] | rules [project] | init [project] | paths | reload | enable | disable | test. Shell: omp-jev config --editor nano. Editors support Ctrl+G ($VISUAL/$EDITOR).",
 					);
 					return;
 				}
@@ -683,9 +814,11 @@ export default function jevExtension(pi: ExtensionAPI): void {
 						`Jev: ${enabled(session) ? "active" : "inactive"}; key ${process.env[session.config.client.apiKeyEnv] ? "configured" : "missing"} (${session.config.client.apiKeyEnv})`,
 						`Model: ${session.config.client.model}; endpoint: ${session.config.client.endpoint}`,
 						`Thinking: ${session.config.thinking.enabled}; delegation: ${session.config.delegation.enabled}; safety: ${session.config.safety.enabled}; recovery: ${session.config.recovery.enabled}`,
-						`Native rule relevance: ${session.config.nativeRules.enabled} (model context only; cannot prevent native UI/interrupt).`,
+						`Native rule relevance: ${session.config.nativeRules.enabled} (all triggered rules; inject by default, skip only confident contextual exemptions; model context only, cannot prevent native UI/interrupt).`,
 						`Rules: ${session.rules.filter((rule) => rule.enabled !== false).length} active. Last decision: ${session.lastDecision ?? "none"}`,
 						`Config (later wins): ${locations.config.join(" -> ")}`,
+						orchestrator.status(ctx),
+						`Orchestrator config: ${locations.orchestrator.join(" -> ")}`,
 						`Rules (project IDs override global): ${locations.rules.join(" -> ")}`,
 						`State sent to TypeSafe: recent visible messages, current operation/task, todos, model/job metadata. System prompt: ${session.config.context.includeSystemPrompt}. Secrets redacted best-effort; not a sandbox.`,
 						"Delegation covers task calls (including nested tool.task); eval agent() bypasses task hooks. Native network retries and text-generation tiny tasks are unchanged.",

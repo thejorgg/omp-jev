@@ -88,7 +88,7 @@ export interface JevConfig {
 		onUncertain: "block" | "allow";
 		onError: "block" | "allow";
 	};
-	nativeRules: RoutingPolicy & { names: string[] };
+	nativeRules: RoutingPolicy;
 	recovery: RoutingPolicy & { maxContinuations: number };
 }
 export interface RuleMatch {

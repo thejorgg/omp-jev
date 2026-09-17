@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@oh-my-pi/pi-coding-agent";
 import * as typebox from "@oh-my-pi/pi-coding-agent/extensibility/legacy-typebox";
 import extension from "../src/extension.js";
 import type { Json, Question, Rule } from "../src/types.js";
@@ -114,9 +118,16 @@ async function harness(
 			JSON.stringify({ version: 1, rules: options.rules }),
 		);
 	const handlers: Record<string, Handler> = {};
+	const commands: Record<
+		string,
+		(args: string, ctx: ExtensionCommandContext) => Promise<unknown>
+	> = {};
 	const levels: string[] = [];
 	const messages: unknown[] = [];
+	const notices: string[] = [];
+	const switches: string[] = [];
 	let reminders = true;
+	let currentModel = { id: "original", provider: "local", reasoning: true };
 	const api = {
 		typebox,
 		pi: {
@@ -131,9 +142,29 @@ async function harness(
 		on: (name: string, fn: Handler) => {
 			handlers[name] = fn;
 		},
-		registerTool: () => {},
-		registerCommand: () => {},
+		registerTool: () => { },
+		registerCommand: (
+			name: string,
+			spec: {
+				handler: (args: string, ctx: ExtensionCommandContext) => unknown;
+			},
+		) => {
+			commands[name] = spec.handler as (
+				args: string,
+				ctx: ExtensionCommandContext,
+			) => Promise<unknown>;
+		},
 		setThinkingLevel: (level: string) => levels.push(level),
+		setModel: async (model: { id: string; provider: string }) => {
+			currentModel = {
+				...currentModel,
+				id: model.id,
+				provider: model.provider,
+			};
+			switches.push(model.id);
+			return true;
+		},
+		getThinkingLevel: () => "medium",
 		sendMessage: (message: unknown) => messages.push(message),
 	} as unknown as ExtensionAPI;
 	const branch: FixtureEntry[] = [
@@ -150,8 +181,17 @@ async function harness(
 		cwd: dir,
 		hasUI: true,
 		mode: "print",
-		ui: { notify() {} },
+		ui: {
+			notify: (text: string) => {
+				notices.push(text);
+			},
+		},
 		model: { id: "test", provider: "local", reasoning: true },
+		models: {
+			current: () => currentModel,
+			resolve: (id: string) => ({ id, provider: "local", reasoning: true }),
+		},
+		isIdle: () => true,
 		sessionManager: {
 			getSessionId: () => "test-session",
 			getBranch: () => branch,
@@ -160,7 +200,7 @@ async function harness(
 		getAsyncJobSnapshot: () => null,
 		hasPendingMessages: () => false,
 		getSystemPrompt: () => ["private system prompt"],
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionCommandContext;
 	extension(api);
 	// This fixture invokes known extension callbacks; each assertion exercises its event's result shape.
 	const run = async (name: string, event: object = {}): Promise<HookResult> =>
@@ -173,7 +213,10 @@ async function harness(
 		messages,
 		branch,
 		ctx,
+		commands,
 		reminders: () => reminders,
+		notices: () => notices,
+		switches: () => switches,
 	};
 }
 
@@ -326,5 +369,103 @@ describe("extension policy consequences", () => {
 		expect(state).not.toContain("private-token");
 		expect(state).not.toContain("hidden reasoning");
 		expect(state).not.toContain("private system prompt");
+	});
+
+	test("delivered user input pauses an active run while orchestrator stage messages do not", async () => {
+		const h = await harness();
+		await h.commands.jev("run fix the login bug", h.ctx);
+		expect(h.messages[0]).toMatchObject({ customType: "jev-orchestrator" });
+		expect(h.switches()).toEqual(["@slow"]);
+		// The orchestrator's own checkpoint guidance is delivered as an agent-attributed
+		// custom message; it must not cancel the run it drives.
+		await h.run("message_start", {
+			message: {
+				role: "custom",
+				customType: "jev-orchestrator",
+				content: [{ type: "text", text: "Jev checkpoint 1/8: plan." }],
+				display: true,
+				attribution: "agent",
+				timestamp: 2,
+			},
+		});
+		// Synthetic or agent-attributed user-role deliveries (host continuations) are
+		// likewise not user input.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [{ type: "text", text: "auto-continuation" }],
+				synthetic: true,
+				attribution: "agent",
+				timestamp: 3,
+			},
+		});
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: plan, stage 1/");
+		// RPC prompt/steer/follow_up deliveries surface as user-role message_start
+		// events; they must release the controller and restore the session model.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [
+					{ type: "text", text: "Stop routing and answer my question" },
+				],
+				attribution: "user",
+				timestamp: 4,
+			},
+		});
+		expect(h.notices().join("\n")).toContain("paused for user input");
+		expect(h.switches()).toEqual(["@slow", "original"]);
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
+	});
+
+	test("settled orchestration keeps suppressing recovery until a real user delivery clears it", async () => {
+		const h = await harness({ choices: { recovery: "rescuer" } });
+		await h.commands.jev("plan draft the migration", h.ctx);
+		const stopEvent = {
+			stop_hook_active: false,
+			signal: new AbortController().signal,
+		};
+		// The plan-only run settles at its first stop boundary.
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		expect(h.notices().join("\n")).toContain("plan ready");
+		// Later stop boundaries stay suppressed: legacy recovery must not fire.
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		// Delivering the orchestrator's own stage guidance does not clear the settlement.
+		await h.run("message_start", {
+			message: {
+				role: "custom",
+				customType: "jev-orchestrator",
+				content: [{ type: "text", text: "Jev checkpoint 1/8: plan." }],
+				display: true,
+				attribution: "agent",
+				timestamp: 2,
+			},
+		});
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		// A real user delivery clears the settled suppression and legacy recovery resumes.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [{ type: "text", text: "Run the plan now" }],
+				attribution: "user",
+				timestamp: 3,
+			},
+		});
+		const result = await h.run("session_stop", stopEvent);
+		expect(result.continue).toBe(true);
+		expect(result.additionalContext).toContain("slow-rescuer");
+	});
+
+	test("typed TUI input still pauses immediately while /jev commands do not", async () => {
+		const h = await harness();
+		await h.commands.jev("run fix the login bug", h.ctx);
+		await h.run("input", { text: "/jev status" });
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: plan, stage 1/");
+		await h.run("input", { text: "wait, reconsider the approach" });
+		expect(h.notices().join("\n")).toContain("paused for user input");
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
 	});
 });

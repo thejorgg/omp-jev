@@ -65,6 +65,7 @@ export class JevOrchestrator {
 	private epochs = new Map<string, number>();
 	private settled = new Set<string>();
 	private modelQueue: Promise<unknown> = Promise.resolve();
+	private restorations = new Map<string, Promise<void>>();
 
 	constructor(
 		private pi: ExtensionAPI,
@@ -129,8 +130,8 @@ export class JevOrchestrator {
 				);
 			// Record the completed switch even when cancellation happened during setModel.
 			run.selectedModel = model;
-			// OMP records its model change, then at most one effort reapplication.
-			// Other thinking records during the await belong to an external change.
+			// Best-effort heuristic: the host may append one effort reapplication.
+			// Without source identity, the first record can instead be a user change.
 			let switched = false,
 				reapplied = false;
 			let manualThinking: ThinkingLevelChangeEntry | undefined;
@@ -177,40 +178,60 @@ export class JevOrchestrator {
 		this.epochs.set(key, (this.epochs.get(key) ?? 0) + 1);
 		if (forget) this.settled.delete(key);
 		if (forget) this.goals.delete(key);
-		if (!run) return;
+		if (!run) {
+			await this.restorations.get(key);
+			return;
+		}
 		this.runs.delete(key);
 		if (!forget) this.settled.add(key);
 		run.controller.abort();
-		await this.deps
-			.changed?.(ctx)
-			.catch((error) =>
-				this.deps.notice(
-					ctx,
-					`Jev settings restoration failed: ${String(error)}`,
-				),
-			);
-		await this.serialize(async () => {
-			// Do not overwrite an explicit /model or thinking-level change made by the user.
-			const current = ctx.models.current();
-			if (
-				sameModel(current, run.selectedModel) &&
-				this.thinkingSelection(ctx) === run.selectedThinking
-			) {
-				if (run.originalModel && !(await this.pi.setModel(run.originalModel))) {
+		// Publish the pending restoration before the first await so a concurrent
+		// start() waits out settings and model restoration instead of snapshotting
+		// the borrowed worker model as its own original.
+		let restored!: () => void;
+		const restoration = new Promise<void>((resolve) => {
+			restored = resolve;
+		});
+		this.restorations.set(key, restoration);
+		try {
+			await this.deps
+				.changed?.(ctx)
+				.catch((error) =>
 					this.deps.notice(
 						ctx,
-						"Jev could not restore the original model; select it with /model.",
-					);
+						`Jev settings restoration failed: ${String(error)}`,
+					),
+				);
+			await this.serialize(async () => {
+				// Best-effort checkpoint: native setModel can still race a later user change.
+				const current = ctx.models.current();
+				if (
+					sameModel(current, run.selectedModel) &&
+					this.thinkingSelection(ctx) === run.selectedThinking
+				) {
+					if (
+						run.originalModel &&
+						!(await this.pi.setModel(run.originalModel))
+					) {
+						this.deps.notice(
+							ctx,
+							"Jev could not restore the original model; select it with /model.",
+						);
+					}
+					// The runtime accepts auto, although ExtensionAPI exposes the narrower effort enum.
+					if (run.manageThinking)
+						this.pi.setThinkingLevel(
+							(run.originalThinking ?? "inherit") as ThinkingLevel,
+						);
 				}
-				// The runtime accepts auto, although ExtensionAPI exposes the narrower effort enum.
-				if (run.manageThinking)
-					this.pi.setThinkingLevel(
-						(run.originalThinking ?? "inherit") as ThinkingLevel,
-					);
-			}
-		}).catch((error) =>
-			this.deps.notice(ctx, `Jev model restoration failed: ${String(error)}`),
-		);
+			}).catch((error) =>
+				this.deps.notice(ctx, `Jev model restoration failed: ${String(error)}`),
+			);
+		} finally {
+			if (this.restorations.get(key) === restoration)
+				this.restorations.delete(key);
+			restored();
+		}
 		this.deps.notice(
 			ctx,
 			`Jev ${reason}. ${run.state.steps} stage(s), ${run.calls} router call(s), ${Math.round(run.routingMs)}ms routing total.`,
@@ -240,6 +261,12 @@ export class JevOrchestrator {
 			throw new Error(
 				"Use /jev plan <goal> or /jev run <goal>. /jev run alone reuses your last explicit Jev goal in this session.",
 			);
+		// A preceding stop may still be restoring settings and the original model;
+		// wait it out so the snapshot below records the user's model, never the
+		// borrowed worker's. The epoch/idleness recheck after preparation still
+		// guards anything that changes during the wait.
+		const restoration = this.restorations.get(key);
+		if (restoration) await restoration;
 		const { main, orchestrator: config } = await this.deps.config(ctx);
 		if (!(await this.deps.enabled(ctx)))
 			throw new Error(

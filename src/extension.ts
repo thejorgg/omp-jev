@@ -216,9 +216,24 @@ export default function jevExtension(pi: ExtensionAPI): void {
 			syncReminders(session);
 		},
 	});
+	// Typed TUI input cancels at submission time; RPC prompt/steer/follow_up never reach the
+	// input event. Their deliveries surface as user-role message_start events in every mode,
+	// while Jev's own stage guidance travels as agent-attributed custom messages, so delivery
+	// of real user content releases the run and clears settled suppression without the
+	// orchestrator cancelling itself.
 	pi.on("input", async (event, ctx) => {
 		if (!/^\/jev(?:\s|$)/.test(event.text.trim()))
 			await orchestrator.userInput(ctx);
+	});
+	pi.on("message_start", async (event, ctx) => {
+		const message = event.message;
+		if (
+			message.role !== "user" ||
+			message.synthetic ||
+			message.attribution === "agent"
+		)
+			return;
+		await orchestrator.userInput(ctx);
 	});
 	pi.on("session_before_switch", async (_event, ctx) => {
 		await orchestrator.stop(ctx, "paused before session switch");

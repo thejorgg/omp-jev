@@ -101,6 +101,7 @@ function harness(configPatch: Partial<OrchestratorConfig> = {}) {
 	];
 	let classify: (init: RequestInit) => Promise<Response> = async () =>
 		response("implement_strong");
+	let changed: ((ctx: unknown) => Promise<void> | void) | undefined;
 	globalThis.fetch = (async (_url, init) => {
 		requests.push(JSON.parse(String(init?.body)));
 		return classify(init!);
@@ -154,6 +155,9 @@ function harness(configPatch: Partial<OrchestratorConfig> = {}) {
 		notice: (_ctx, text) => {
 			notices.push(text);
 		},
+		changed: async (context) => {
+			await changed?.(context);
+		},
 	});
 	const stopEvent = (signal = new AbortController().signal) => ({
 		signal,
@@ -177,6 +181,9 @@ function harness(configPatch: Partial<OrchestratorConfig> = {}) {
 		},
 		select: (fn: typeof select) => {
 			select = fn;
+		},
+		changed: (fn: typeof changed) => {
+			changed = fn;
 		},
 		configuration: (fn: typeof configuration) => {
 			configuration = fn;
@@ -359,6 +366,64 @@ test("user input invalidates a start still awaiting configuration", async () => 
 	config.resolve({ main: h.main, orchestrator: h.config });
 	await assert.rejects(() => start, /Session changed/);
 	assert.equal(h.messages.length, 0);
+});
+test("start waits out pending stop restoration instead of snapshotting the worker model", async () => {
+	const h = harness();
+	await h.controller.start(h.ctx, "goal");
+	assert.equal(h.state.model.id, "planner");
+	// Window 1: restoration is not even enqueued yet; deps.changed still awaits.
+	const settingsRestored = deferred<void>();
+	h.changed(() => settingsRestored.promise);
+	const stopped = h.controller.stop(h.ctx, "test cleanup");
+	const retried = h.controller.start(h.ctx, "");
+	assert.equal(h.controller.isActive(h.ctx), false);
+	assert.equal(h.messages.length, 1);
+	assert.equal(h.state.model.id, "planner");
+	settingsRestored.resolve();
+	await Promise.all([stopped, retried]);
+	assert.equal(h.controller.isActive(h.ctx), true);
+	assert.equal(h.messages.length, 2);
+	// The retry borrowed the worker model; stopping it must return to A, never stay on B.
+	await h.controller.stop(h.ctx, "test cleanup");
+	assert.equal(h.state.model.id, "original");
+	// Window 2: the serialized model restoration itself is still in flight.
+	await h.controller.start(h.ctx, "");
+	assert.equal(h.state.model.id, "planner");
+	const modelRestored = deferred<void>();
+	h.select(async (id) => {
+		if (id === "original") await modelRestored.promise;
+		return true;
+	});
+	const stoppedAgain = h.controller.stop(h.ctx, "test cleanup");
+	const retriedAgain = h.controller.start(h.ctx, "");
+	assert.equal(h.controller.isActive(h.ctx), false);
+	assert.equal(h.state.model.id, "planner");
+	modelRestored.resolve();
+	await Promise.all([stoppedAgain, retriedAgain]);
+	assert.equal(h.controller.isActive(h.ctx), true);
+	assert.equal(h.state.model.id, "planner");
+	await h.controller.stop(h.ctx, "test cleanup");
+	assert.equal(h.state.model.id, "original");
+});
+test("a repeated stop waits until the pending restoration has finished", async () => {
+	const h = harness();
+	await h.controller.start(h.ctx, "goal");
+	const release = deferred<void>();
+	h.changed(() => release.promise);
+	const stopping = h.controller.stop(h.ctx, "first stop");
+	let completed = false;
+	const repeated = h.controller.stop(h.ctx, "repeated stop").then(() => {
+		completed = true;
+	});
+	try {
+		await Promise.resolve();
+		assert.equal(completed, false);
+	} finally {
+		release.resolve();
+		await Promise.all([stopping, repeated]);
+	}
+	assert.equal(h.state.model.id, "original");
+	assert.equal(h.state.thinking, "medium");
 });
 test("secret and hidden-reasoning text do not enter router state", async () => {
 	const h = harness();

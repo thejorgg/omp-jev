@@ -62,7 +62,9 @@ This reuses the last explicit Jev goal in this session, asks the planner to reco
 /jev stop
 ```
 
-`stop` cancels the controller, aborts an in-flight router request, and prevents further routed stages. **It does not kill an already-running worker/tool; interrupt OMP for that.** User input, model changes, session navigation, reload, shutdown and pending work also stop or pause ownership. Runs do not silently resume across process restarts. Previous model/thinking settings are restored when still owned by the controller; explicit user changes are not overwritten.
+`stop` cancels routing, aborts an in-flight router request, and prevents further routed stages. **It does not kill an already-running worker/tool; interrupt OMP for that.** User input, observed selection changes, session navigation, reload, shutdown and pending work also stop or pause routing. Runs do not silently resume across process restarts. Model/thinking restoration uses best-effort ownership checks, not an atomic host transaction.
+
+**Accepted concurrency limitation:** automatic switching is retained. OMP 18.2.3 exposes an unconditional asynchronous model setter without mutation ownership, cancellation or a selection revision. A manual model/thinking change made during a stage switch or restoration can be overwritten by the late plugin operation. Journal checks cannot reliably distinguish a host default/clamp from a user choice. Avoid native selection changes while these operations are in flight: run `/jev stop`, wait for its completion notice and any worker to finish, then change settings. The plugin does not guarantee preservation of concurrent manual selections.
 
 ## What runs where
 
@@ -94,7 +96,7 @@ Automatic plugin policies default off; explicitly configured custom rules and en
 
 Low-confidence decisions escalate once to the planner, then pause rather than guess. Service errors pause immediately. Repeated actions and fast-worker errors escalate. Completion is rejected while actionable todos or a stage error remain; a review stage is required by default. These checks do not prove code correctness. Confidence and choice probability are separate gates, neither a guarantee of correctness.
 
-Terminal assistant/provider errors pause the controller without routing to completion. A terminal `agent_end` releases ownership even when interruption bypasses `session_stop`; host-scheduled continuations retain ownership. Manual model or thinking changes pause routing. Recorded automatic thinking mode is restored as `auto`, not its resolved effort. OMP 18.2.3 does not expose the configured selector directly; when the session has no thinking-selection record (including unresolved initial auto mode), the controller leaves thinking mode untouched rather than applying role effort overrides it cannot safely undo.
+Terminal assistant/provider errors pause the controller without routing to completion. A terminal `agent_end` releases ownership even when interruption bypasses `session_stop`; host-scheduled continuations retain ownership. Model/thinking changes observed at checkpoints pause routing; concurrent changes during an awaited switch have the limitation above. Recorded automatic thinking mode is restored as `auto`, not its resolved effort. OMP 18.2.3 does not expose the configured selector directly; when the session has no thinking-selection record (including unresolved initial auto mode), the controller does not explicitly set role effort or restore the unknown selector. Native model switching may still apply the target model's defaults.
 
 `maxSteps` defaults to 8, counting the initial plan; the accepted range is 1–9 to respect OMP's eight advisory stop continuations. There is no hidden unbounded retry loop. Any other extension can still affect OMP's execution; this controller is not isolation from other extensions.
 

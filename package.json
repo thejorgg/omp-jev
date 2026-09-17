@@ -28,7 +28,9 @@
 		"config": "bun bin/omp-jev.ts config"
 	},
 	"peerDependencies": {
-		"@oh-my-pi/pi-coding-agent": ">=18.2.3"
+		"@oh-my-pi/pi-coding-agent": ">=18.2.3",
+		"@oh-my-pi/pi-tui": ">=18.2.3",
+		"@oh-my-pi/pi-natives": ">=18.2.3"
 	},
 	"peerDependenciesMeta": {
 		"@oh-my-pi/pi-coding-agent": {

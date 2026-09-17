@@ -103,21 +103,28 @@ Terminal assistant/provider errors pause the controller without routing to compl
 
 ## Read-only dispatcher (`jev_dispatch`)
 
-Opt-in via `dispatcher.enabled` in the main config. Exposes the `jev_dispatch` tool for very narrow scout/discovery work: the calling model passes a TODO-style queue of tasks, each with candidate paths (a shallow workspace tree is derived automatically when omitted). The ultrafast Jev classifier — not an LLM — picks which candidates to read (one typed question per candidate plus a terminal choice per step, so one Jev call batches reads and the next step), and the loop advances tasks in software.
+The `jev_dispatch` tool accepts natural-language discovery tasks and optional path hints. Enable it with `dispatcher.enabled`; the `/jev dispatcher` command also works as an explicit one-off while automatic policies and the tool remain disabled.
 
-Each task ends `TASK_FINISHED` (with collected file evidence), `NO_PATH`, or `REQUIRE_BIGGER_MODEL`, which returns control to the caller to dispatch a real `smol`/`slow` subagent. Reads are workspace-local regular files only (symlink-resolved, size-capped); no writes, MCP, skills or user input. Budgets are configurable: per-task steps, reads per step, candidates offered per step, total tool calls, evidence size and invalid-choice retries.
+Discovery uses workspace-local file reads, content grep, filename globbing, AST search, and OMP's read-only LSP navigation: symbols, definitions, references, implementations, types, and hover. Software generates bounded actions from query terms, paths, imports, and discovered symbols. Jev selects actions and scores file relevance through typed questions; it does not generate executable code, arbitrary searches, or a prose report.
 
-This is not a replacement for OMP's native todo/subagent flow; it saves LLM tool-calls on mechanical discovery. Jev cannot invent grep patterns or free text, so candidate paths come from the caller and the tree.
+Results contain ranked `file:line` locations and retained source evidence. The native terminal panel shows progress, counts, elapsed time, and eight leading locations. Use OMP's expand-tools shortcut (default **Ctrl+O**) for remaining locations, evidence, task outcomes, and warnings.
+
+Each task ends `TASK_FINISHED`, `NO_PATH`, or `REQUIRE_BIGGER_MODEL`. Budget exhaustion, failed decisions, and cancellation retain partial evidence rather than claiming an exhaustive search. Escalation stops the queue and returns untouched `remainingTasks`; it never spawns a model. This does not replace native todo/subagent orchestration.
+
+Discovery never writes source files or invokes shell commands, MCP tools, skills, or another agent. Paths are confined to the workspace after resolving symlinks. Implicit file scans respect gitignore, skip hidden files, and filter common private-key stores. Explicit file hints may read hidden files inside the workspace: do not supply secret files. Selected repository evidence is sent to the configured TypeSafe endpoint and remains untrusted data.
+
 ### Try it from chat
 
 With `TYPESAFE_API_KEY` in OMP's environment (or your configured `client.apiKeyEnv`), run:
 
 ```text
 /jev dispatcher
-/jev dispatcher Read package.json to find the test command.
+/jev dispatcher Find where NativeRuleGate is implemented
+/jev dispatcher I want to read all files related to native rule selection
+/jev dispatcher stop
 ```
 
-The bare command shows help. A task runs immediately through Jev without enabling the plugin's automatic policies or the `jev_dispatch` tool. Results and file evidence remain in chat; no LLM turn starts. Wait for any active agent/orchestrator run to finish first.
+The bare command shows help. A task runs immediately through Jev; results stay in chat and no LLM turn starts. Wait for any active agent/orchestrator run to finish first. Press **Esc** or **Ctrl+C** while the command is running, or use `/jev dispatcher stop`, to cancel and retain partial evidence.
 
 For several tasks or explicit candidate files, pass the same JSON shape as the tool:
 
@@ -125,11 +132,21 @@ For several tasks or explicit candidate files, pass the same JSON shape as the t
 /jev dispatcher {"tasks":[{"id":"manifest","description":"Read package.json to find the test command","paths":["package.json"]},{"id":"config","description":"Read tsconfig.json to find compiler options","paths":["tsconfig.json"]}],"tree":""}
 ```
 
-An empty `tree` uses only the supplied candidate paths; omitting it adds the bounded workspace tree. `REQUIRE_BIGGER_MODEL` stops the queue and returns the escalated task plus `remainingTasks`, without spawning another model. Evidence is raw file content, not a generated report.
+Omitting `tree` inventories up to 10,000 workspace files and enables repository-wide bootstrap search. Supplying `tree` replaces that inventory with explicit candidates; `tree: ""` starts from `paths` alone. Related locations discovered through navigation can still be followed. Results are bounded evidence, not a guarantee that every related file has been found.
 
-The command uses the configured `dispatcher` budgets. Every decision attempt counts toward `maxStepsPerTask`, including invalid answers or empty read selections. Empty selections also consume the invalid-choice budget.
+Defaults: 12 decision steps per task, four actions per batch, 12 offered actions per decision, 32 total tool calls including inventory, and 24,000 retained evidence characters. `dispatcher.timeoutMs` defaults to 5,000 ms per Jev request; language servers use OMP's own timeouts and may take longer on first use.
+
+`minReadProbability` controls action selection and file relevance. `minConfidence` and `minProbability` gate accepted stop/escalation choices. When that choice is uncertain, independently accepted read-only actions may gather more evidence. Rejected candidates are deferred until new evidence arrives; an entirely rejected window advances without replaying it. Every decision attempt consumes a step. `maxInvalidChoices` bounds repeated unusable continuation selections.
 
 After updating extension code, use `/reload-plugins` or restart OMP. `/jev reload` reloads configuration only.
+
+To test the checkout's extension without loading another installed copy:
+
+```sh
+omp --no-extensions -e ./src/extension.ts
+```
+
+Try an exact symbol, a related-files query, and a missing symbol. Expand the results, then cancel a running query to check partial evidence. LSP capability failures and truncated searches are shown as warnings, not treated as proof that a symbol is absent.
 
 
 ## Files and precedence

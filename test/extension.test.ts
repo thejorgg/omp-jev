@@ -8,6 +8,7 @@ import type {
 	ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent";
 import * as typebox from "@oh-my-pi/pi-coding-agent/extensibility/legacy-typebox";
+import { BUILTIN_TOOLS, Settings } from "@oh-my-pi/pi-coding-agent";
 import extension from "../src/extension.js";
 import type { Json, Question, Rule } from "../src/types.js";
 
@@ -66,13 +67,29 @@ async function harness(
 				return new Response("private server error", { status: 503 });
 			const answers = Object.fromEntries(
 				Object.entries(payload.questions).map(([id, question]) => {
-					if (question.type === "noul")
-						return [id, { type: "noul", noul: 0.99 }];
+					if (question.type === "noul") {
+						const state = payload.state as {
+							actions?: Array<{ id: string; tool: string }>;
+						};
+						const action = state.actions?.find((item) => item.id === id);
+						return [
+							id,
+							{
+								type: "noul",
+								noul: action && action.tool !== "read" ? 0 : 0.99,
+							},
+						];
+					}
 					if (question.type !== "choice")
 						throw new Error("Unexpected question");
 					const labels = Object.keys(question.criteria);
+					const state = payload.state as { completedActions?: string[] };
+					const scripted = options.choices?.[id];
 					const choice =
-						options.choices?.[id] ?? (id === "safety" ? "allow" : labels[0]);
+						scripted === "EXECUTE_SELECTED" &&
+						state.completedActions?.some((item) => item.startsWith("read "))
+							? "TASK_FINISHED"
+							: (scripted ?? (id === "safety" ? "allow" : labels[0]));
 					return [
 						id,
 						{
@@ -138,18 +155,15 @@ async function harness(
 	const messages: unknown[] = [];
 	const notices: string[] = [];
 	const switches: string[] = [];
-	let reminders = true;
+	const runtimeSettings = Settings.isolated({ "todo.reminders": true });
 	let currentModel = { id: "original", provider: "local", reasoning: true };
 	const api = {
 		typebox,
 		pi: {
+			BUILTIN_TOOLS,
+			Settings,
 			getAgentDir: () => join(dir, "global"),
-			settings: {
-				get: () => reminders,
-				override: (_key: string, value: boolean) => {
-					reminders = value;
-				},
-			},
+			settings: runtimeSettings,
 		},
 		on: (name: string, fn: Handler) => {
 			handlers[name] = fn;
@@ -169,6 +183,7 @@ async function harness(
 				ctx: ExtensionCommandContext,
 			) => Promise<unknown>;
 		},
+		registerMessageRenderer: () => {},
 		setThinkingLevel: (level: string) => levels.push(level),
 		setModel: async (model: { id: string; provider: string }) => {
 			currentModel = {
@@ -197,6 +212,7 @@ async function harness(
 		hasUI: true,
 		mode: "print",
 		ui: {
+			setWidget: () => {},
 			notify: (text: string) => {
 				notices.push(text);
 			},
@@ -209,6 +225,7 @@ async function harness(
 		isIdle: () => true,
 		sessionManager: {
 			getSessionId: () => "test-session",
+			getSessionFile: () => undefined,
 			getBranch: () => branch,
 		},
 		getContextUsage: () => undefined,
@@ -230,7 +247,7 @@ async function harness(
 		ctx,
 		commands,
 		tools,
-		reminders: () => reminders,
+		reminders: () => runtimeSettings.get("todo.reminders"),
 		notices: () => notices,
 		switches: () => switches,
 	};
@@ -487,7 +504,7 @@ describe("extension policy consequences", () => {
 	test("jev_dispatch reads workspace files and finishes the queue", async () => {
 		const h = await harness({
 			config: { dispatcher: { enabled: true } },
-			choices: { next_action: "READ_SELECTED" },
+			choices: { next_action: "EXECUTE_SELECTED" },
 		});
 		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
 		const tool = h.tools.jev_dispatch;
@@ -505,14 +522,24 @@ describe("extension policy consequences", () => {
 		};
 		expect(details.status).toBe("finished");
 		expect(details.results[0].status).toBe("TASK_FINISHED");
-		expect(details.results[0].summary).toContain("export const alpha = 1;");
+		expect(
+			(
+				result.details as { results: Array<{ evidence: string[] }> }
+			).results[0].evidence.join("\n"),
+		).toContain("export const alpha = 1;");
 	});
 
 	test("jev_dispatch refuses paths outside the workspace", async () => {
 		const h = await harness({
 			config: { dispatcher: { enabled: true } },
-			choices: { next_action: "READ_SELECTED" },
+			choices: { next_action: "EXECUTE_SELECTED" },
 		});
+		const outside = await mkdtemp(join(tmpdir(), "jev-outside-"));
+		cleanup.push(() => rm(outside, { recursive: true, force: true }));
+		await writeFile(
+			join(outside, "private.ts"),
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
 		const result = await h.tools.jev_dispatch.execute(
 			"t",
 			{
@@ -520,25 +547,28 @@ describe("extension policy consequences", () => {
 					{
 						id: "t1",
 						description: "read secrets",
-						paths: ["../../../etc/shadow"],
+						paths: [join(outside, "private.ts")],
 					},
 				],
+				tree: "",
 			},
 			undefined,
 			undefined,
 			h.ctx,
 		);
-		const details = result.details as {
-			results: Array<{ status: string; summary: string }>;
-		};
-		// The reader rejects the escape; Jev is offered no candidates it can use.
-		expect(details.results[0].summary).not.toContain("root:");
+		expect(JSON.stringify(result)).not.toContain(
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
+		expect(JSON.stringify(h.requests)).not.toContain(
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
+		expect(result.details).toMatchObject({ status: "escalated" });
 	});
 
 	test("dispatcher command runs once without enabling automatic policies or the tool", async () => {
 		const h = await harness({
 			config: { enabled: false, dispatcher: { enabled: false } },
-			choices: { next_action: "READ_SELECTED" },
+			choices: { next_action: "EXECUTE_SELECTED" },
 		});
 		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
 		await h.commands.jev("dispatcher Read a.ts", h.ctx);
@@ -551,7 +581,9 @@ describe("extension policy consequences", () => {
 					results: [
 						expect.objectContaining({
 							status: "TASK_FINISHED",
-							summary: expect.stringContaining("export const alpha = 1;"),
+							evidence: expect.arrayContaining([
+								expect.stringContaining("export const alpha = 1;"),
+							]),
 						}),
 					],
 				}),

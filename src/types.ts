@@ -77,11 +77,11 @@ export interface DispatcherConfig {
 	timeoutMs: number;
 	minConfidence: number;
 	minProbability: number;
-	/** Minimum noul probability for a candidate path to be read. */
+	/** Minimum noul probability for a read-only discovery action to be useful. */
 	minReadProbability: number;
 	maxStepsPerTask: number;
 	maxActionsPerStep: number;
-	/** Maximum candidate paths offered to Jev per step. */
+	/** Maximum candidate discovery actions offered to Jev per step. */
 	maxCandidatesPerStep: number;
 	maxToolCalls: number;
 	maxEvidenceChars: number;

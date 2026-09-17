@@ -8,14 +8,19 @@ export type ConfigScope = "global" | "project";
 export function configHome(env = process.env, home = homedir()): string {
 	const override = env.OMP_JEV_CONFIG_DIR;
 	if (override) {
-		if (!isAbsolute(override)) throw new Error("OMP_JEV_CONFIG_DIR must be absolute");
+		if (!isAbsolute(override))
+			throw new Error("OMP_JEV_CONFIG_DIR must be absolute");
 		return override;
 	}
 	const xdg = env.XDG_CONFIG_HOME;
 	return join(xdg && isAbsolute(xdg) ? xdg : join(home, ".config"), "omp-jev");
 }
 
-export function configPaths(cwd: string, legacyAgentDir: string, globalDir = configHome()) {
+export function configPaths(
+	cwd: string,
+	legacyAgentDir: string,
+	globalDir = configHome(),
+) {
 	const global = {
 		main: join(globalDir, "config.json"),
 		rules: join(globalDir, "rules.json"),
@@ -27,7 +32,8 @@ export function configPaths(cwd: string, legacyAgentDir: string, globalDir = con
 		orchestrator: join(cwd, ".omp", "jev-orchestrator.json"),
 	};
 	return {
-		global, project,
+		global,
+		project,
 		// Keep old installations working; canonical XDG files override legacy globals.
 		config: [join(legacyAgentDir, "jev.json"), global.main, project.main],
 		rules: [join(legacyAgentDir, ".jevrules"), global.rules, project.rules],

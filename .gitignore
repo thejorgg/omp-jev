@@ -1,0 +1,4 @@
+node_modules/
+.env
+.env.*
+.omp/jev.json

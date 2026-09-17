@@ -1,0 +1,51 @@
+{
+	"version": 1,
+	"enabled": true,
+	"client": {
+		"endpoint": "https://api.typesafe.ai/v1/systemone",
+		"model": "jev-latest",
+		"apiKeyEnv": "TYPESAFE_API_KEY",
+		"timeoutMs": 5000
+	},
+	"context": {
+		"maxChars": 48000,
+		"recentMessages": 12,
+		"includeSystemPrompt": false,
+		"redactKeys": [
+			"authorization",
+			"apiKey",
+			"api_key",
+			"password",
+			"token",
+			"secret",
+			"access_token"
+		]
+	},
+	"thinking": { "enabled": true, "minConfidence": 0.75, "minProbability": 0.7 },
+	"delegation": {
+		"enabled": true,
+		"minConfidence": 0.75,
+		"minProbability": 0.7,
+		"overrideExplicit": false
+	},
+	"safety": {
+		"enabled": true,
+		"minConfidence": 0.8,
+		"minProbability": 0.8,
+		"tools": ["bash", "eval", "write", "edit", "ssh", "task", "hub"],
+		"onUncertain": "block",
+		"onError": "block"
+	},
+	"nativeRules": {
+		"enabled": true,
+		"minConfidence": 0.9,
+		"minProbability": 0.9,
+		"names": ["ts-no-local-is-record", "ts-no-tiny-functions", "ts-set-map"]
+	},
+	"recovery": {
+		"enabled": true,
+		"minConfidence": 0.8,
+		"minProbability": 0.75,
+		"maxContinuations": 2
+	}
+}

@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "record-vs-map-guidance",
+      "enabled": false,
+      "events": ["before_agent_start"],
+      "question": {
+        "type": "choice",
+        "instructions": {
+          "goal": "Decide which keyed-collection representation the current task should use.",
+          "lookAt": [
+            "operations implied by the task: JSON round-trips, key types, insertion-order needs",
+            "existing collection types in the files the task touches",
+            "size and stability of the key set"
+          ],
+          "answerWith": "exactly one of the criteria keys"
+        },
+        "criteria": {
+          "record": "Plain object with string keys; JSON serialization matters; small, fixed key set.",
+          "map": "Frequent add/delete or reorder, non-string keys, size tracking, or insertion-order iteration at scale."
+        }
+      },
+      "state": { "hint": "Arbitrary JSON context is allowed here; the host merges live task state before evaluation." },
+      "outcomes": [
+        {
+          "when": { "choice": "map", "minProbability": 0.7, "minConfidence": 0.6 },
+          "action": {
+            "type": "message",
+            "message": "Prefer Map for this task: dynamic keys or ordering are in play. Keep Record only at JSON boundaries and convert explicitly."
+          }
+        },
+        {
+          "when": { "choice": "record", "minProbability": 0.7, "minConfidence": 0.6 },
+          "action": {
+            "type": "message",
+            "message": "Prefer a plain Record here: static string keys and JSON round-tripping dominate. Avoid pulling in Map for this."
+          }
+        }
+      ]
+    },
+    {
+      "id": "folder-placement",
+      "enabled": false,
+      "events": ["manual", "tool_call"],
+      "tools": ["write", "edit"],
+      "cooldownTurns": 3,
+      "question": {
+        "type": "choice",
+        "instructions": {
+          "question": "Where does the proposed module belong?",
+          "inspect": "Use the proposed code, task corpus, dependencies and the conventions in this rule's state. For manual calls use event.state.",
+          "boundary": "Classify responsibility, not the currently proposed filename. Do not invent missing repository conventions."
+        },
+        "criteria": {
+          "src": "Shared application and domain code, not server-specific transport code.",
+          "api-src": "Server-only HTTP endpoints, request validation, and transport adapters.",
+          "others": "Tests, fixtures, scripts, documentation, or evidence too incomplete to select a source folder."
+        }
+      },
+      "state": {
+        "conventions": "Example only: replace these responsibilities with your own project layout and dependencies."
+      },
+      "outcomes": [
+        {
+          "when": { "choice": "src", "minConfidence": 0.85, "minProbability": 0.8 },
+          "action": { "type": "message", "message": "Jev selects src for this module. Check the existing domain boundaries before choosing its exact path." }
+        },
+        {
+          "when": { "choice": "api-src", "minConfidence": 0.85, "minProbability": 0.8 },
+          "action": { "type": "message", "message": "Jev selects api-src for this server-only module. Keep shared domain logic out of the transport layer." }
+        },
+        {
+          "when": { "choice": "others", "minConfidence": 0.85, "minProbability": 0.8 },
+          "action": { "type": "message", "message": "Neither source folder clearly fits. Use the existing test/script/docs convention or inspect the missing context." }
+        }
+      ]
+    }
+  ]
+}

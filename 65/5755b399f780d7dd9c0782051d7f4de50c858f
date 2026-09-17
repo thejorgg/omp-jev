@@ -1,0 +1,22 @@
+README.md
+  h_76aab65d18d7a3 65-67,99
+src/extension.ts
+  h_76aab65d18d7a3 219-223,228-237
+src/orchestrator.ts
+  h_76aab65d18d7a3 68,133-134,181-184,188-199,202-225,227-234,264-269
+test/extension.test.ts
+  h_76aab65d18d7a3 5-9,121-124,127-128,130,145-156,158-167,184-188,190-194,203,216,218-219,373-470
+test/orchestrator.test.ts
+  h_76aab65d18d7a3 104,158-160,185-187,370-427
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "655755b399f780d7dd9c0782051d7f4de50c858f",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

@@ -95,6 +95,12 @@ async function harness(
 	await writeFile(
 		join(dir, ".omp", "jev.json"),
 		JSON.stringify({
+			enabled: true,
+			thinking: { enabled: true },
+			delegation: { enabled: true },
+			safety: { enabled: true },
+			nativeRules: { enabled: true },
+			recovery: { enabled: true },
 			client: {
 				endpoint: `http://127.0.0.1:${server.port}/v1/systemone`,
 				apiKeyEnv: keyEnv,
@@ -172,6 +178,23 @@ async function harness(
 }
 
 describe("extension policy consequences", () => {
+	test("disabled plugin leaves native tools, thinking and recovery untouched", async () => {
+		const h = await harness({ config: { enabled: false } });
+		await h.run("before_agent_start", { prompt: "Implement the task" });
+		expect(
+			await h.run("tool_call", { toolName: "eval", input: { code: "1 + 1" } }),
+		).toBeUndefined();
+		expect(
+			await h.run("session_stop", {
+				signal: new AbortController().signal,
+				stop_hook_active: false,
+			}),
+		).toBeUndefined();
+		expect(h.requests).toEqual([]);
+		expect(h.levels).toEqual([]);
+		expect(h.messages).toEqual([]);
+		expect(h.reminders()).toBe(true);
+	});
 	test("reroutes eligible batch tasks but preserves explicit and specialist agents", async () => {
 		const h = await harness({
 			choices: { delegate_0: "slow", delegate_3: "smol" },
@@ -201,7 +224,7 @@ describe("extension policy consequences", () => {
 	test("uncertainty retains thinking and delegation but blocks selected unsafe execution", async () => {
 		const h = await harness({
 			confidence: 0.2,
-			config: { safety: { tools: ["bash"] } },
+			config: { safety: { enabled: true, tools: ["bash"] } },
 		});
 		await h.run("before_agent_start", { prompt: "Task" });
 		expect(h.levels).toEqual([]);

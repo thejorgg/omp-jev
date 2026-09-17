@@ -39,9 +39,11 @@ Inside OMP:
 
 The in-OMP editor retains native Ctrl+G integration with `$VISUAL`/`$EDITOR`. Shell edits require `/jev reload` in an existing OMP session. Stop orchestration before editing; a run snapshots its settings at startup. Existing malformed files can still be opened for repair. `init` materializes files without opening an editor; startup never writes config files automatically.
 
+The plugin and its automatic judgment policies are disabled by default. Native OMP thinking, judgment/eval and guards remain in control; loading this extension does not add duplicate classifier calls. Keep `"enabled": false` in the global main config to disable all plugin judgments, including `jev_decide`. Existing sessions must run `/jev reload` (or `/jev disable` immediately).
+
 ## Run the orchestrator
 
-Set `TYPESAFE_API_KEY` in the environment used to launch OMP, or change `client.apiKeyEnv` in the main config. Keep the key out of config files and version control. Configure OMP's `@slow` and `@smol` model roles, or replace the four model selectors in `orchestrator.json` with authenticated `provider/model-id` selectors.
+For an explicit plugin-orchestrated run, use `/jev enable` in the current session first. This enables the plugin, but its thinking, delegation, safety, native-rule and recovery policies remain off unless individually enabled in configuration. Set `TYPESAFE_API_KEY` in the environment used to launch OMP, or change `client.apiKeyEnv` in the main config. Keep the key out of config files and version control. Configure OMP's `@slow` and `@smol` model roles, or replace the four model selectors in `orchestrator.json` with authenticated `provider/model-id` selectors.
 
 ```text
 /jev plan Fix the login race without changing the public API
@@ -88,9 +90,11 @@ Defaults:
 
 Every model selector, thinking level and stage prompt is editable in `orchestrator.json`. The controller makes one bounded Jev Choice request per completed execution stage, with a separate 1,500 ms timeout, no retries, six recent visible messages and a 16,000-character state budget by default. `/jev plan` alone makes no next-action router call. `/jev status` and completion notices report observed router calls and elapsed routing time; no live latency/quality benchmark is implied.
 
-Existing safety, custom-rule and other Jev hooks remain active and may make additional calls. The normal thinking classifier is skipped while the controller owns a stage, avoiding conflicting thinking-level changes. The controller exclusively owns its `session_stop` cycle, so legacy recovery and custom stop-continuation rules cannot extend or resurrect the same run. Their ordinary behavior returns on subsequent user input.
+Automatic plugin policies default off; explicitly configured custom rules and enabled policies can still make additional calls after plugin activation. The normal thinking classifier is skipped while the controller owns a stage. The controller exclusively owns its `session_stop` cycle, so legacy recovery and custom stop-continuation rules cannot extend or resurrect the same run.
 
 Low-confidence decisions escalate once to the planner, then pause rather than guess. Service errors pause immediately. Repeated actions and fast-worker errors escalate. Completion is rejected while actionable todos or a stage error remain; a review stage is required by default. These checks do not prove code correctness. Confidence and choice probability are separate gates, neither a guarantee of correctness.
+
+Terminal assistant/provider errors pause the controller without routing to completion. A terminal `agent_end` releases ownership even when interruption bypasses `session_stop`; host-scheduled continuations retain ownership. Manual model or thinking changes pause routing. Recorded automatic thinking mode is restored as `auto`, not its resolved effort. OMP 18.2.3 does not expose the configured selector directly; when the session has no thinking-selection record (including unresolved initial auto mode), the controller leaves thinking mode untouched rather than applying role effort overrides it cannot safely undo.
 
 `maxSteps` defaults to 8, counting the initial plan; the accepted range is 1–9 to respect OMP's eight advisory stop continuations. There is no hidden unbounded retry loop. Any other extension can still affect OMP's execution; this controller is not isolation from other extensions.
 
@@ -116,6 +120,8 @@ Configuration is strict JSON: unknown keys, malformed schemas and out-of-range v
 
 The extension retains Jev thinking selection, eligible task delegation to the supplied `smol`/`slow` agent presets, tool safety classification, custom Choice/Noul/Score rules, native-rule relevance filtering, stop recovery and the `jev_decide` tool. See `examples/jev.json` and `examples/.jevrules` for the pre-existing policy formats. Custom rules belong in global `rules.json` or project `.jevrules`.
 
+If native-rule filtering is explicitly enabled, Jev assesses every triggered rule by content and operation context, not a name allowlist. Injection is the default; only a confident exemption removes guidance. Temporary or internal code can make production-facing requirements irrelevant, but does not blanket-exempt safety or universal requirements. Remove obsolete `nativeRules.names` keys from existing configs. Filtering affects model context only, not OMP's earlier UI notification or interruption.
+
 Classifier state includes the goal, bounded visible conversation/tool output, todos and controller metadata. Hidden reasoning and images are excluded from the orchestrator state. Redaction reuses the existing best-effort key/token rules; it is not comprehensive secret detection. Do not send repositories or data to TypeSafe without authorization.
 
 ## Verification
@@ -128,4 +134,4 @@ bun test
 
 New tests exercise routing budgets and thresholds, failure escalation, mandatory review, cancellation/startup races, model restoration, compact/redacted state, XDG precedence, migration, project overlays, editor argument handling and invalid-draft recovery. Controller tests mock the provider and OMP host while using the real Jev client validator; they do not measure live Jev routing quality or real-model implementation quality.
 
-For a live smoke test, use a disposable repository and authenticated model roles: run `/jev test`, `/jev plan` for a small change, inspect the plan, then `/jev run`. Check the displayed stage/model transitions, cancel a run, verify restoration with `/jev status` and `/model`, and run your project tests independently.
+For a live smoke test, use a disposable repository and authenticated model roles: run `/jev enable`, `/jev test`, `/jev plan` for a small change, inspect the plan, then `/jev run`. Check the displayed stage/model transitions, cancel a run, verify restoration with `/jev status` and `/model`, and run your project tests independently. Use `/jev disable` afterward to return control entirely to native OMP.

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { evaluate } from "./client.js";
 import { hasActionableTodos, redact, routerVisibleMessages, todoPhases } from "./orchestrator-context.js";
 import { chooseNext, nextActionQuestion, routerState, stagePrompt, stageRole, type OrchestratorConfig, type Role, type RunState, type Stage } from "./orchestration.js";
@@ -65,7 +66,8 @@ export class JevOrchestrator {
 			// Record the completed switch even when cancellation happened during setModel.
 			run.selectedModel = model;
 			if (!this.owns(ctx, run)) return false;
-			this.pi.setThinkingLevel(run.config.thinking[role]);
+			// Validated JSON uses strings; OMP represents these values as enum members.
+			this.pi.setThinkingLevel(run.config.thinking[role] as ThinkingLevel);
 			run.selectedThinking = this.pi.getThinkingLevel();
 			return true;
 		});
@@ -88,7 +90,7 @@ export class JevOrchestrator {
 				if (run.originalModel && !await this.pi.setModel(run.originalModel)) {
 					this.deps.notice(ctx, "Jev could not restore the original model; select it with /model.");
 				}
-				if (restoreThinking) this.pi.setThinkingLevel(run.originalThinking);
+				if (restoreThinking) this.pi.setThinkingLevel(run.originalThinking ?? "inherit");
 			}
 		}).catch(error => this.deps.notice(ctx, `Jev model restoration failed: ${String(error)}`));
 		this.deps.notice(ctx, `Jev ${reason}. ${run.state.steps} stage(s), ${run.calls} router call(s), ${Math.round(run.routingMs)}ms routing total.`);

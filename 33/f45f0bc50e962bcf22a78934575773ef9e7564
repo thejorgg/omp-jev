@@ -1,0 +1,22 @@
+README.md
+  h_76aab65d18d7a3 135,139-140
+src/discovery-tools.ts
+  h_76aab65d18d7a3 46,127-128,409,417
+src/dispatcher.ts
+  h_76aab65d18d7a3 433-439
+test/discovery-tools.test.ts
+  h_76aab65d18d7a3 211,218-230
+test/dispatcher.test.ts
+  h_76aab65d18d7a3 370,501-566
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "33f45f0bc50e962bcf22a78934575773ef9e7564",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

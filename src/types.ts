@@ -71,6 +71,22 @@ export interface RoutingPolicy {
 	minConfidence: number;
 	minProbability: number;
 }
+/** Budgets and thresholds for the read-only Jev task dispatcher. */
+export interface DispatcherConfig {
+	enabled: boolean;
+	timeoutMs: number;
+	minConfidence: number;
+	minProbability: number;
+	/** Minimum noul probability for a read-only discovery action to be useful. */
+	minReadProbability: number;
+	maxStepsPerTask: number;
+	maxActionsPerStep: number;
+	/** Maximum candidate discovery actions offered to Jev per step. */
+	maxCandidatesPerStep: number;
+	maxToolCalls: number;
+	maxEvidenceChars: number;
+	maxInvalidChoices: number;
+}
 export interface JevConfig {
 	version: 1;
 	enabled: boolean;
@@ -90,6 +106,7 @@ export interface JevConfig {
 	};
 	nativeRules: RoutingPolicy;
 	recovery: RoutingPolicy & { maxContinuations: number };
+	dispatcher: DispatcherConfig;
 }
 export interface RuleMatch {
 	rule: Rule;

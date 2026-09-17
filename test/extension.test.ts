@@ -2,8 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "@oh-my-pi/pi-coding-agent";
 import * as typebox from "@oh-my-pi/pi-coding-agent/extensibility/legacy-typebox";
+import { BUILTIN_TOOLS, Settings } from "@oh-my-pi/pi-coding-agent";
 import extension from "../src/extension.js";
 import type { Json, Question, Rule } from "../src/types.js";
 
@@ -62,13 +67,29 @@ async function harness(
 				return new Response("private server error", { status: 503 });
 			const answers = Object.fromEntries(
 				Object.entries(payload.questions).map(([id, question]) => {
-					if (question.type === "noul")
-						return [id, { type: "noul", noul: 0.99 }];
+					if (question.type === "noul") {
+						const state = payload.state as {
+							actions?: Array<{ id: string; tool: string }>;
+						};
+						const action = state.actions?.find((item) => item.id === id);
+						return [
+							id,
+							{
+								type: "noul",
+								noul: action && action.tool !== "read" ? 0 : 0.99,
+							},
+						];
+					}
 					if (question.type !== "choice")
 						throw new Error("Unexpected question");
 					const labels = Object.keys(question.criteria);
+					const state = payload.state as { completedActions?: string[] };
+					const scripted = options.choices?.[id];
 					const choice =
-						options.choices?.[id] ?? (id === "safety" ? "allow" : labels[0]);
+						scripted === "EXECUTE_SELECTED" &&
+						state.completedActions?.some((item) => item.startsWith("read "))
+							? "TASK_FINISHED"
+							: (scripted ?? (id === "safety" ? "allow" : labels[0]));
 					return [
 						id,
 						{
@@ -95,6 +116,12 @@ async function harness(
 	await writeFile(
 		join(dir, ".omp", "jev.json"),
 		JSON.stringify({
+			enabled: true,
+			thinking: { enabled: true },
+			delegation: { enabled: true },
+			safety: { enabled: true },
+			nativeRules: { enabled: true },
+			recovery: { enabled: true },
 			client: {
 				endpoint: `http://127.0.0.1:${server.port}/v1/systemone`,
 				apiKeyEnv: keyEnv,
@@ -107,27 +134,67 @@ async function harness(
 			join(dir, ".jevrules"),
 			JSON.stringify({ version: 1, rules: options.rules }),
 		);
+	const tools: Record<
+		string,
+		{
+			execute: (
+				id: string,
+				params: Record<string, unknown>,
+				signal?: AbortSignal,
+				update?: unknown,
+				ctx?: ExtensionContext,
+			) => Promise<{ details?: unknown }>;
+		}
+	> = {};
 	const handlers: Record<string, Handler> = {};
+	const commands: Record<
+		string,
+		(args: string, ctx: ExtensionCommandContext) => Promise<unknown>
+	> = {};
 	const levels: string[] = [];
 	const messages: unknown[] = [];
-	let reminders = true;
+	const notices: string[] = [];
+	const switches: string[] = [];
+	const runtimeSettings = Settings.isolated({ "todo.reminders": true });
+	let currentModel = { id: "original", provider: "local", reasoning: true };
 	const api = {
 		typebox,
 		pi: {
+			BUILTIN_TOOLS,
+			Settings,
 			getAgentDir: () => join(dir, "global"),
-			settings: {
-				get: () => reminders,
-				override: (_key: string, value: boolean) => {
-					reminders = value;
-				},
-			},
+			settings: runtimeSettings,
 		},
 		on: (name: string, fn: Handler) => {
 			handlers[name] = fn;
 		},
-		registerTool: () => {},
-		registerCommand: () => {},
+		registerTool: (spec: unknown) => {
+			const tool = spec as { name: string } & (typeof tools)[string];
+			tools[tool.name] = tool;
+		},
+		registerCommand: (
+			name: string,
+			spec: {
+				handler: (args: string, ctx: ExtensionCommandContext) => unknown;
+			},
+		) => {
+			commands[name] = spec.handler as (
+				args: string,
+				ctx: ExtensionCommandContext,
+			) => Promise<unknown>;
+		},
+		registerMessageRenderer: () => {},
 		setThinkingLevel: (level: string) => levels.push(level),
+		setModel: async (model: { id: string; provider: string }) => {
+			currentModel = {
+				...currentModel,
+				id: model.id,
+				provider: model.provider,
+			};
+			switches.push(model.id);
+			return true;
+		},
+		getThinkingLevel: () => "medium",
 		sendMessage: (message: unknown) => messages.push(message),
 	} as unknown as ExtensionAPI;
 	const branch: FixtureEntry[] = [
@@ -144,17 +211,28 @@ async function harness(
 		cwd: dir,
 		hasUI: true,
 		mode: "print",
-		ui: { notify() {} },
+		ui: {
+			setWidget: () => {},
+			notify: (text: string) => {
+				notices.push(text);
+			},
+		},
 		model: { id: "test", provider: "local", reasoning: true },
+		models: {
+			current: () => currentModel,
+			resolve: (id: string) => ({ id, provider: "local", reasoning: true }),
+		},
+		isIdle: () => true,
 		sessionManager: {
 			getSessionId: () => "test-session",
+			getSessionFile: () => undefined,
 			getBranch: () => branch,
 		},
 		getContextUsage: () => undefined,
 		getAsyncJobSnapshot: () => null,
 		hasPendingMessages: () => false,
 		getSystemPrompt: () => ["private system prompt"],
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionCommandContext;
 	extension(api);
 	// This fixture invokes known extension callbacks; each assertion exercises its event's result shape.
 	const run = async (name: string, event: object = {}): Promise<HookResult> =>
@@ -167,11 +245,31 @@ async function harness(
 		messages,
 		branch,
 		ctx,
-		reminders: () => reminders,
+		commands,
+		tools,
+		reminders: () => runtimeSettings.get("todo.reminders"),
+		notices: () => notices,
+		switches: () => switches,
 	};
 }
-
 describe("extension policy consequences", () => {
+	test("disabled plugin leaves native tools, thinking and recovery untouched", async () => {
+		const h = await harness({ config: { enabled: false } });
+		await h.run("before_agent_start", { prompt: "Implement the task" });
+		expect(
+			await h.run("tool_call", { toolName: "eval", input: { code: "1 + 1" } }),
+		).toBeUndefined();
+		expect(
+			await h.run("session_stop", {
+				signal: new AbortController().signal,
+				stop_hook_active: false,
+			}),
+		).toBeUndefined();
+		expect(h.requests).toEqual([]);
+		expect(h.levels).toEqual([]);
+		expect(h.messages).toEqual([]);
+		expect(h.reminders()).toBe(true);
+	});
 	test("reroutes eligible batch tasks but preserves explicit and specialist agents", async () => {
 		const h = await harness({
 			choices: { delegate_0: "slow", delegate_3: "smol" },
@@ -201,7 +299,7 @@ describe("extension policy consequences", () => {
 	test("uncertainty retains thinking and delegation but blocks selected unsafe execution", async () => {
 		const h = await harness({
 			confidence: 0.2,
-			config: { safety: { tools: ["bash"] } },
+			config: { safety: { enabled: true, tools: ["bash"] } },
 		});
 		await h.run("before_agent_start", { prompt: "Task" });
 		expect(h.levels).toEqual([]);
@@ -303,5 +401,253 @@ describe("extension policy consequences", () => {
 		expect(state).not.toContain("private-token");
 		expect(state).not.toContain("hidden reasoning");
 		expect(state).not.toContain("private system prompt");
+	});
+
+	test("delivered user input pauses an active run while orchestrator stage messages do not", async () => {
+		const h = await harness();
+		await h.commands.jev("run fix the login bug", h.ctx);
+		expect(h.messages[0]).toMatchObject({ customType: "jev-orchestrator" });
+		expect(h.switches()).toEqual(["@slow"]);
+		// The orchestrator's own checkpoint guidance is delivered as an agent-attributed
+		// custom message; it must not cancel the run it drives.
+		await h.run("message_start", {
+			message: {
+				role: "custom",
+				customType: "jev-orchestrator",
+				content: [{ type: "text", text: "Jev checkpoint 1/8: plan." }],
+				display: true,
+				attribution: "agent",
+				timestamp: 2,
+			},
+		});
+		// Synthetic or agent-attributed user-role deliveries (host continuations) are
+		// likewise not user input.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [{ type: "text", text: "auto-continuation" }],
+				synthetic: true,
+				attribution: "agent",
+				timestamp: 3,
+			},
+		});
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: plan, stage 1/");
+		// RPC prompt/steer/follow_up deliveries surface as user-role message_start
+		// events; they must release the controller and restore the session model.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [
+					{ type: "text", text: "Stop routing and answer my question" },
+				],
+				attribution: "user",
+				timestamp: 4,
+			},
+		});
+		expect(h.notices().join("\n")).toContain("paused for user input");
+		expect(h.switches()).toEqual(["@slow", "original"]);
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
+	});
+
+	test("settled orchestration keeps suppressing recovery until a real user delivery clears it", async () => {
+		const h = await harness({ choices: { recovery: "rescuer" } });
+		await h.commands.jev("plan draft the migration", h.ctx);
+		const stopEvent = {
+			stop_hook_active: false,
+			signal: new AbortController().signal,
+		};
+		// The plan-only run settles at its first stop boundary.
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		expect(h.notices().join("\n")).toContain("plan ready");
+		// Later stop boundaries stay suppressed: legacy recovery must not fire.
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		// Delivering the orchestrator's own stage guidance does not clear the settlement.
+		await h.run("message_start", {
+			message: {
+				role: "custom",
+				customType: "jev-orchestrator",
+				content: [{ type: "text", text: "Jev checkpoint 1/8: plan." }],
+				display: true,
+				attribution: "agent",
+				timestamp: 2,
+			},
+		});
+		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
+		// A real user delivery clears the settled suppression and legacy recovery resumes.
+		await h.run("message_start", {
+			message: {
+				role: "user",
+				content: [{ type: "text", text: "Run the plan now" }],
+				attribution: "user",
+				timestamp: 3,
+			},
+		});
+		const result = await h.run("session_stop", stopEvent);
+		expect(result.continue).toBe(true);
+		expect(result.additionalContext).toContain("slow-rescuer");
+	});
+
+	test("typed TUI input still pauses immediately while /jev commands do not", async () => {
+		const h = await harness();
+		await h.commands.jev("run fix the login bug", h.ctx);
+		await h.run("input", { text: "/jev status" });
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: plan, stage 1/");
+		await h.run("input", { text: "wait, reconsider the approach" });
+		expect(h.notices().join("\n")).toContain("paused for user input");
+		await h.commands.jev("status", h.ctx);
+		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
+	});
+
+	test("jev_dispatch reads workspace files and finishes the queue", async () => {
+		const h = await harness({
+			config: { dispatcher: { enabled: true } },
+			choices: { next_action: "EXECUTE_SELECTED" },
+		});
+		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
+		const tool = h.tools.jev_dispatch;
+		expect(tool).toBeDefined();
+		const result = await tool.execute(
+			"t",
+			{ tasks: [{ id: "t1", description: "read a.ts", paths: ["a.ts"] }] },
+			undefined,
+			undefined,
+			h.ctx,
+		);
+		const details = result.details as {
+			status: string;
+			results: Array<{ status: string; summary: string }>;
+		};
+		expect(details.status).toBe("finished");
+		expect(details.results[0].status).toBe("TASK_FINISHED");
+		expect(
+			(
+				result.details as { results: Array<{ evidence: string[] }> }
+			).results[0].evidence.join("\n"),
+		).toContain("export const alpha = 1;");
+	});
+
+	test("jev_dispatch refuses paths outside the workspace", async () => {
+		const h = await harness({
+			config: { dispatcher: { enabled: true } },
+			choices: { next_action: "EXECUTE_SELECTED" },
+		});
+		const outside = await mkdtemp(join(tmpdir(), "jev-outside-"));
+		cleanup.push(() => rm(outside, { recursive: true, force: true }));
+		await writeFile(
+			join(outside, "private.ts"),
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
+		const result = await h.tools.jev_dispatch.execute(
+			"t",
+			{
+				tasks: [
+					{
+						id: "t1",
+						description: "read secrets",
+						paths: [join(outside, "private.ts")],
+					},
+				],
+				tree: "",
+			},
+			undefined,
+			undefined,
+			h.ctx,
+		);
+		expect(JSON.stringify(result)).not.toContain(
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
+		expect(JSON.stringify(h.requests)).not.toContain(
+			"PRIVATE_CONTENT_MUST_NOT_ESCAPE",
+		);
+		expect(result.details).toMatchObject({ status: "escalated" });
+	});
+
+	test("dispatcher command runs once without enabling automatic policies or the tool", async () => {
+		const h = await harness({
+			config: { enabled: false, dispatcher: { enabled: false } },
+			choices: { next_action: "EXECUTE_SELECTED" },
+		});
+		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
+		await h.commands.jev("dispatcher Read a.ts", h.ctx);
+		expect(h.messages).toContainEqual(
+			expect.objectContaining({
+				customType: "jev-dispatcher",
+				display: true,
+				details: expect.objectContaining({
+					status: "finished",
+					results: [
+						expect.objectContaining({
+							status: "TASK_FINISHED",
+							evidence: expect.arrayContaining([
+								expect.stringContaining("export const alpha = 1;"),
+							]),
+						}),
+					],
+				}),
+			}),
+		);
+		await expect(
+			h.tools.jev_dispatch.execute(
+				"still-disabled",
+				{ tasks: [{ id: "read", description: "Read a.ts" }] },
+				undefined,
+				undefined,
+				h.ctx,
+			),
+		).rejects.toThrow(/disabled/);
+		await h.run("before_agent_start", { prompt: "Keep native behavior" });
+		expect(h.levels).toEqual([]);
+		expect(h.switches()).toEqual([]);
+	});
+
+	test("dispatcher command hands back an escalated task and the untouched queue", async () => {
+		const h = await harness({
+			config: { enabled: false },
+			choices: { next_action: "REQUIRE_BIGGER_MODEL" },
+		});
+		const tasks = [
+			{ id: "investigate", description: "Explain the architecture" },
+			{ id: "later", description: "Inspect the tests" },
+		];
+		await h.commands.jev(
+			`dispatcher ${JSON.stringify({ tasks, tree: "a.ts" })}`,
+			h.ctx,
+		);
+		expect(h.messages).toContainEqual(
+			expect.objectContaining({
+				customType: "jev-dispatcher",
+				details: expect.objectContaining({
+					status: "escalated",
+					results: [
+						expect.objectContaining({
+							task: tasks[0],
+							status: "REQUIRE_BIGGER_MODEL",
+						}),
+					],
+					remainingTasks: [tasks[1]],
+				}),
+			}),
+		);
+		expect(h.requests).toHaveLength(1);
+		expect(h.switches()).toEqual([]);
+	});
+
+	test("dispatcher command validates the entire JSON queue before sending data", async () => {
+		const h = await harness({ config: { enabled: false } });
+		await h.commands.jev(
+			`dispatcher ${JSON.stringify({
+				tasks: [
+					{ id: "valid", description: "Read a.ts" },
+					{ id: "invalid", description: 42 },
+				],
+			})}`,
+			h.ctx,
+		);
+		expect(h.requests).toEqual([]);
+		expect(h.messages).toEqual([]);
+		expect(h.notices().at(-1)).toMatch(/description/);
 	});
 });

@@ -5,6 +5,10 @@ import { DEFAULT_CONFIG } from "../src/config.js";
 import { NativeRuleGate } from "../src/native-rules.js";
 import type { Evaluate } from "../src/types.js";
 
+const enabledConfig = {
+	...DEFAULT_CONFIG,
+	nativeRules: { ...DEFAULT_CONFIG.nativeRules, enabled: true },
+};
 const rule = {
 	name: "project-canonical-guard",
 	content:
@@ -50,7 +54,7 @@ test("confident exception filters any triggered rule, preserving tool result and
 	const result = await gate.filter(
 		messages,
 		ctx,
-		DEFAULT_CONFIG,
+		enabledConfig,
 		classify(0.99),
 	);
 	expect(JSON.stringify(result)).not.toContain(rule.content);
@@ -69,12 +73,12 @@ test("uncertainty or outage leaves native enforcement unchanged", async () => {
 	const uncertain = new NativeRuleGate();
 	uncertain.remember([rule]);
 	expect(
-		await uncertain.filter(messages, ctx, DEFAULT_CONFIG, classify(0.4)),
+		await uncertain.filter(messages, ctx, enabledConfig, classify(0.4)),
 	).toBeUndefined();
 	const outage = new NativeRuleGate();
 	outage.remember([rule]);
 	expect(
-		await outage.filter(messages, ctx, DEFAULT_CONFIG, async () => {
+		await outage.filter(messages, ctx, enabledConfig, async () => {
 			throw new Error("offline");
 		}),
 	).toBeUndefined();
@@ -95,7 +99,7 @@ test("never strips reminder-looking text from the actual tool output", async () 
 			],
 		},
 	];
-	const result = await gate.filter(input, ctx, DEFAULT_CONFIG, classify(0.99));
+	const result = await gate.filter(input, ctx, enabledConfig, classify(0.99));
 	expect(result?.[0]).toMatchObject({
 		content: [{ text: "" }, { text: `File contents:\n${text}` }],
 	});
@@ -105,11 +109,11 @@ test("raising the threshold invalidates a previously accepted skip", async () =>
 	const gate = new NativeRuleGate();
 	gate.remember([rule]);
 	expect(
-		await gate.filter(messages, ctx, DEFAULT_CONFIG, classify(0.95)),
+		await gate.filter(messages, ctx, enabledConfig, classify(0.95)),
 	).toBeDefined();
 	const stricter = {
-		...DEFAULT_CONFIG,
-		nativeRules: { ...DEFAULT_CONFIG.nativeRules, minConfidence: 0.99 },
+		...enabledConfig,
+		nativeRules: { ...enabledConfig.nativeRules, minConfidence: 0.99 },
 	};
 	expect(
 		await gate.filter(messages, ctx, stricter, classify(0.95)),
@@ -131,7 +135,7 @@ test("each rule in a batch defaults to injection unless its own skip is confiden
 		timestamp: index + 1,
 		content: `<system-interrupt reason="rule_violation" rule="${entry.name}" path="project:rule.md">\n${entry.content}\n</system-interrupt>`,
 	}));
-	const result = await gate.filter(input, ctx, DEFAULT_CONFIG, async () => ({
+	const result = await gate.filter(input, ctx, enabledConfig, async () => ({
 		model: "test",
 		answers: {
 			rule_0: {

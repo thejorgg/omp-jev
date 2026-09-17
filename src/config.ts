@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
+import { DEFAULT_DISPATCHER_CONFIG } from "./dispatcher.js";
 import { isRecord } from "./guards.js";
 import { parseRules } from "./rules.js";
 import type { JevConfig, Rule } from "./types.js";
 
 export const DEFAULT_CONFIG: JevConfig = {
 	version: 1,
-	enabled: true,
+	enabled: false,
 	client: {
 		endpoint: "https://api.typesafe.ai/v1/systemone",
 		model: "jev-latest",
@@ -26,15 +27,15 @@ export const DEFAULT_CONFIG: JevConfig = {
 			"access_token",
 		],
 	},
-	thinking: { enabled: true, minConfidence: 0.75, minProbability: 0.7 },
+	thinking: { enabled: false, minConfidence: 0.75, minProbability: 0.7 },
 	delegation: {
-		enabled: true,
+		enabled: false,
 		minConfidence: 0.75,
 		minProbability: 0.7,
 		overrideExplicit: false,
 	},
 	safety: {
-		enabled: true,
+		enabled: false,
 		minConfidence: 0.8,
 		minProbability: 0.8,
 		tools: ["bash", "eval", "write", "edit", "ssh", "task", "hub"],
@@ -42,16 +43,17 @@ export const DEFAULT_CONFIG: JevConfig = {
 		onError: "block",
 	},
 	nativeRules: {
-		enabled: true,
+		enabled: false,
 		minConfidence: 0.9,
 		minProbability: 0.9,
 	},
 	recovery: {
-		enabled: true,
+		enabled: false,
 		minConfidence: 0.8,
 		minProbability: 0.75,
 		maxContinuations: 2,
 	},
+	dispatcher: { ...DEFAULT_DISPATCHER_CONFIG, enabled: false },
 };
 
 type LeafParser = (value: unknown, path: string) => unknown;
@@ -155,6 +157,19 @@ const CONFIG_SCHEMA: { [key: string]: SchemaNode } = {
 	},
 	nativeRules: POLICY,
 	recovery: { ...POLICY, maxContinuations: boundedInt(0, 3) },
+	dispatcher: {
+		enabled: bool,
+		timeoutMs: boundedInt(100, 120_000),
+		minConfidence: unit,
+		minProbability: unit,
+		minReadProbability: unit,
+		maxStepsPerTask: boundedInt(1, 64),
+		maxActionsPerStep: boundedInt(1, 16),
+		maxCandidatesPerStep: boundedInt(1, 32),
+		maxToolCalls: boundedInt(1, 256),
+		maxEvidenceChars: boundedInt(1_024, 200_000),
+		maxInvalidChoices: boundedInt(0, 8),
+	},
 };
 
 function applySection(

@@ -1,0 +1,64 @@
+.github/workflows/ci.yml
+  h_76aab65d18d7a3 1-18
+README.md
+  h_76aab65d18d7a3 1-188
+bin/omp-jev.ts
+  h_76aab65d18d7a3 1-11
+bun.lock
+  h_76aab65d18d7a3 14-16
+examples/jev.json
+  h_76aab65d18d7a3 3,24-28,30,36,44,49,53-65
+package.json
+  h_76aab65d18d7a3 21-22,27-28,31-33,48-50
+src/config-cli.ts
+  h_76aab65d18d7a3 1-152
+src/config.ts
+  h_76aab65d18d7a3 2,9,30,32,38,46,51,56,160-172
+src/discovery-tools.ts
+  h_76aab65d18d7a3 1-1027
+src/discovery.ts
+  h_76aab65d18d7a3 1-76
+src/dispatcher-ui.ts
+  h_76aab65d18d7a3 1-506
+src/dispatcher.ts
+  h_76aab65d18d7a3 1-709
+src/extension.ts
+  h_76aab65d18d7a3 7,9,25-42,44,66,72,74-75,129-132,143-159,174,183-187,217-261,281-282,294,309-313,378-379,461,494-495,630-632,642-747,760,762,779,781,787-888,890,900-949,952-955,962-965,1000,1011,1014-1015
+src/orchestration.ts
+  h_76aab65d18d7a3 1-266
+src/orchestrator-context.ts
+  h_76aab65d18d7a3 1-22
+src/orchestrator.ts
+  h_76aab65d18d7a3 1-513
+src/paths.ts
+  h_76aab65d18d7a3 1-42
+src/settings.ts
+  h_76aab65d18d7a3 1-76
+src/types.ts
+  h_76aab65d18d7a3 74-89,109
+test/discovery-tools.test.ts
+  h_76aab65d18d7a3 1-233
+test/dispatcher.test.ts
+  h_76aab65d18d7a3 1-500
+test/extension.test.ts
+  h_76aab65d18d7a3 5-9,11,70-82,86-87,89-92,119-124,137-148,150-153,156-159,163-164,166,171-186,188-197,214-219,221-225,228,235,248-252,256-272,302,405-652
+test/native-rules.test.ts
+  h_76aab65d18d7a3 8-11,57,76,81,102,112,115-116,138
+test/orchestration.test.ts
+  h_76aab65d18d7a3 1-222
+test/orchestrator.test.ts
+  h_76aab65d18d7a3 1-631
+test/settings.test.ts
+  h_76aab65d18d7a3 1-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "46a7e6d72c2a2227a18b4b3cddeaa0f4f9ea787b",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

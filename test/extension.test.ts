@@ -117,6 +117,18 @@ async function harness(
 			join(dir, ".jevrules"),
 			JSON.stringify({ version: 1, rules: options.rules }),
 		);
+	const tools: Record<
+		string,
+		{
+			execute: (
+				id: string,
+				params: Record<string, unknown>,
+				signal?: AbortSignal,
+				update?: unknown,
+				ctx?: ExtensionContext,
+			) => Promise<{ details?: unknown }>;
+		}
+	> = {};
 	const handlers: Record<string, Handler> = {};
 	const commands: Record<
 		string,
@@ -142,7 +154,10 @@ async function harness(
 		on: (name: string, fn: Handler) => {
 			handlers[name] = fn;
 		},
-		registerTool: () => { },
+		registerTool: (spec: unknown) => {
+			const tool = spec as { name: string } & (typeof tools)[string];
+			tools[tool.name] = tool;
+		},
 		registerCommand: (
 			name: string,
 			spec: {
@@ -214,12 +229,12 @@ async function harness(
 		branch,
 		ctx,
 		commands,
+		tools,
 		reminders: () => reminders,
 		notices: () => notices,
 		switches: () => switches,
 	};
 }
-
 describe("extension policy consequences", () => {
 	test("disabled plugin leaves native tools, thinking and recovery untouched", async () => {
 		const h = await harness({ config: { enabled: false } });
@@ -467,5 +482,56 @@ describe("extension policy consequences", () => {
 		expect(h.notices().join("\n")).toContain("paused for user input");
 		await h.commands.jev("status", h.ctx);
 		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
+	});
+
+	test("jev_dispatch reads workspace files and finishes the queue", async () => {
+		const h = await harness({
+			config: { dispatcher: { enabled: true } },
+			choices: { next_action: "READ_SELECTED" },
+		});
+		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
+		const tool = h.tools.jev_dispatch;
+		expect(tool).toBeDefined();
+		const result = await tool.execute(
+			"t",
+			{ tasks: [{ id: "t1", description: "read a.ts", paths: ["a.ts"] }] },
+			undefined,
+			undefined,
+			h.ctx,
+		);
+		const details = result.details as {
+			status: string;
+			results: Array<{ status: string; summary: string }>;
+		};
+		expect(details.status).toBe("finished");
+		expect(details.results[0].status).toBe("TASK_FINISHED");
+		expect(details.results[0].summary).toContain("export const alpha = 1;");
+	});
+
+	test("jev_dispatch refuses paths outside the workspace", async () => {
+		const h = await harness({
+			config: { dispatcher: { enabled: true } },
+			choices: { next_action: "READ_SELECTED" },
+		});
+		const result = await h.tools.jev_dispatch.execute(
+			"t",
+			{
+				tasks: [
+					{
+						id: "t1",
+						description: "read secrets",
+						paths: ["../../../etc/shadow"],
+					},
+				],
+			},
+			undefined,
+			undefined,
+			h.ctx,
+		);
+		const details = result.details as {
+			results: Array<{ status: string; summary: string }>;
+		};
+		// The reader rejects the escape; Jev is offered no candidates it can use.
+		expect(details.results[0].summary).not.toContain("root:");
 	});
 });

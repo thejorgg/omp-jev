@@ -30,6 +30,11 @@ import {
 	loadOrchestrator,
 } from "./settings.js";
 import { JevOrchestrator } from "./orchestrator.js";
+import {
+	createWorkspaceReader,
+	DispatchEngine,
+	workspaceTree,
+} from "./dispatcher.js";
 import { NativeRuleGate } from "./native-rules.js";
 import { matchRules } from "./rules.js";
 import type {
@@ -626,6 +631,49 @@ export default function jevExtension(pi: ExtensionAPI): void {
 			};
 		},
 	});
+	pi.registerTool({
+		name: "jev_dispatch",
+		label: "Jev read-only dispatcher",
+		description:
+			"Run a queue of very narrow read-only discovery tasks (scout-style: summarize a file, find where a symbol appears among given candidates) through the ultrafast Jev classifier instead of an LLM. Pass one entry per TODO-style task, each with candidate paths; omit tree to auto-derive a shallow workspace tree. Jev picks which candidates to read via typed choices and advances the queue in software. Returns per-task status: TASK_FINISHED with collected evidence, NO_PATH, or REQUIRE_BIGGER_MODEL — on REQUIRE_BIGGER_MODEL, dispatch a real smol/slow subagent for that work instead of retrying this tool. Reads are workspace-local files only; no writes, no MCP, no skills, no user input.",
+		parameters: T.Object({
+			tasks: T.Array(
+				T.Object({
+					id: T.String(),
+					description: T.String(),
+					paths: T.Optional(T.Array(T.String())),
+				}),
+			),
+			tree: T.Optional(T.String()),
+		}),
+		async execute(_id, params, signal, _update, ctx) {
+			const session = await get(ctx);
+			if (!session.config.dispatcher.enabled)
+				throw new Error(
+					"Jev dispatcher is disabled. Enable dispatcher.enabled in /jev config.",
+				);
+			if (!enabled(session))
+				throw new Error(
+					"Jev is inactive. Check /jev status and the configured API key environment variable.",
+				);
+			if (!params.tasks.length) throw new Error("Provide at least one task");
+			const tree = params.tree ?? (await workspaceTree(ctx.cwd));
+			const engine = new DispatchEngine(
+				pi,
+				session.config,
+				session.config.dispatcher,
+				createWorkspaceReader(ctx.cwd),
+			);
+			const result = await engine.dispatch(
+				{ tasks: params.tasks, tree },
+				signal,
+			);
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				details: result,
+			};
+		},
+	});
 
 	const output = (ctx: ExtensionCommandContext, text: string): void => {
 		if (ctx.hasUI) ctx.ui.notify(text, "info");
@@ -815,6 +863,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 						`Model: ${session.config.client.model}; endpoint: ${session.config.client.endpoint}`,
 						`Thinking: ${session.config.thinking.enabled}; delegation: ${session.config.delegation.enabled}; safety: ${session.config.safety.enabled}; recovery: ${session.config.recovery.enabled}`,
 						`Native rule relevance: ${session.config.nativeRules.enabled} (all triggered rules; inject by default, skip only confident contextual exemptions; model context only, cannot prevent native UI/interrupt).`,
+						`Read-only dispatcher: ${session.config.dispatcher.enabled} (jev_dispatch tool; TASK_FINISHED/NO_PATH/REQUIRE_BIGGER_MODEL per task).`,
 						`Rules: ${session.rules.filter((rule) => rule.enabled !== false).length} active. Last decision: ${session.lastDecision ?? "none"}`,
 						`Config (later wins): ${locations.config.join(" -> ")}`,
 						orchestrator.status(ctx),

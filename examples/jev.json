@@ -50,5 +50,18 @@
 		"minConfidence": 0.8,
 		"minProbability": 0.75,
 		"maxContinuations": 2
+	},
+	"dispatcher": {
+		"enabled": false,
+		"timeoutMs": 1500,
+		"minConfidence": 0.75,
+		"minProbability": 0.7,
+		"minReadProbability": 0.6,
+		"maxStepsPerTask": 12,
+		"maxActionsPerStep": 4,
+		"maxCandidatesPerStep": 12,
+		"maxToolCalls": 32,
+		"maxEvidenceChars": 24000,
+		"maxInvalidChoices": 2
 	}
 }

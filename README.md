@@ -100,6 +100,15 @@ Terminal assistant/provider errors pause the controller without routing to compl
 
 `maxSteps` defaults to 8, counting the initial plan; the accepted range is 1–9 to respect OMP's eight advisory stop continuations. There is no hidden unbounded retry loop. Any other extension can still affect OMP's execution; this controller is not isolation from other extensions.
 
+
+## Read-only dispatcher (`jev_dispatch`)
+
+Opt-in via `dispatcher.enabled` in the main config. Exposes the `jev_dispatch` tool for very narrow scout/discovery work: the calling model passes a TODO-style queue of tasks, each with candidate paths (a shallow workspace tree is derived automatically when omitted). The ultrafast Jev classifier — not an LLM — picks which candidates to read (one typed question per candidate plus a terminal choice per step, so one Jev call batches reads and the next step), and the loop advances tasks in software.
+
+Each task ends `TASK_FINISHED` (with collected file evidence), `NO_PATH`, or `REQUIRE_BIGGER_MODEL`, which returns control to the caller to dispatch a real `smol`/`slow` subagent. Reads are workspace-local regular files only (symlink-resolved, size-capped); no writes, MCP, skills or user input. Budgets are configurable: per-task steps, reads per step, candidates offered per step, total tool calls, evidence size and invalid-choice retries.
+
+This is not a replacement for OMP's native todo/subagent flow; it saves LLM tool-calls on mechanical discovery. Jev cannot invent grep patterns or free text, so candidate paths come from the caller and the tree.
+
 ## Files and precedence
 
 Default global directory: `~/.config/omp-jev`. An absolute `$XDG_CONFIG_HOME` changes this to `$XDG_CONFIG_HOME/omp-jev`; an absolute `$OMP_JEV_CONFIG_DIR` overrides the directory directly.

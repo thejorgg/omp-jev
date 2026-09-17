@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { DEFAULT_DISPATCHER_CONFIG } from "./dispatcher.js";
 import { isRecord } from "./guards.js";
 import { parseRules } from "./rules.js";
 import type { JevConfig, Rule } from "./types.js";
@@ -52,6 +53,7 @@ export const DEFAULT_CONFIG: JevConfig = {
 		minProbability: 0.75,
 		maxContinuations: 2,
 	},
+	dispatcher: { ...DEFAULT_DISPATCHER_CONFIG, enabled: false },
 };
 
 type LeafParser = (value: unknown, path: string) => unknown;
@@ -155,6 +157,19 @@ const CONFIG_SCHEMA: { [key: string]: SchemaNode } = {
 	},
 	nativeRules: POLICY,
 	recovery: { ...POLICY, maxContinuations: boundedInt(0, 3) },
+	dispatcher: {
+		enabled: bool,
+		timeoutMs: boundedInt(100, 120_000),
+		minConfidence: unit,
+		minProbability: unit,
+		minReadProbability: unit,
+		maxStepsPerTask: boundedInt(1, 64),
+		maxActionsPerStep: boundedInt(1, 16),
+		maxCandidatesPerStep: boundedInt(1, 32),
+		maxToolCalls: boundedInt(1, 256),
+		maxEvidenceChars: boundedInt(1_024, 200_000),
+		maxInvalidChoices: boundedInt(0, 8),
+	},
 };
 
 function applySection(

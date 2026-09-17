@@ -100,6 +100,38 @@ Terminal assistant/provider errors pause the controller without routing to compl
 
 `maxSteps` defaults to 8, counting the initial plan; the accepted range is 1–9 to respect OMP's eight advisory stop continuations. There is no hidden unbounded retry loop. Any other extension can still affect OMP's execution; this controller is not isolation from other extensions.
 
+
+## Read-only dispatcher (`jev_dispatch`)
+
+Opt-in via `dispatcher.enabled` in the main config. Exposes the `jev_dispatch` tool for very narrow scout/discovery work: the calling model passes a TODO-style queue of tasks, each with candidate paths (a shallow workspace tree is derived automatically when omitted). The ultrafast Jev classifier — not an LLM — picks which candidates to read (one typed question per candidate plus a terminal choice per step, so one Jev call batches reads and the next step), and the loop advances tasks in software.
+
+Each task ends `TASK_FINISHED` (with collected file evidence), `NO_PATH`, or `REQUIRE_BIGGER_MODEL`, which returns control to the caller to dispatch a real `smol`/`slow` subagent. Reads are workspace-local regular files only (symlink-resolved, size-capped); no writes, MCP, skills or user input. Budgets are configurable: per-task steps, reads per step, candidates offered per step, total tool calls, evidence size and invalid-choice retries.
+
+This is not a replacement for OMP's native todo/subagent flow; it saves LLM tool-calls on mechanical discovery. Jev cannot invent grep patterns or free text, so candidate paths come from the caller and the tree.
+### Try it from chat
+
+With `TYPESAFE_API_KEY` in OMP's environment (or your configured `client.apiKeyEnv`), run:
+
+```text
+/jev dispatcher
+/jev dispatcher Read package.json to find the test command.
+```
+
+The bare command shows help. A task runs immediately through Jev without enabling the plugin's automatic policies or the `jev_dispatch` tool. Results and file evidence remain in chat; no LLM turn starts. Wait for any active agent/orchestrator run to finish first.
+
+For several tasks or explicit candidate files, pass the same JSON shape as the tool:
+
+```text
+/jev dispatcher {"tasks":[{"id":"manifest","description":"Read package.json to find the test command","paths":["package.json"]},{"id":"config","description":"Read tsconfig.json to find compiler options","paths":["tsconfig.json"]}],"tree":""}
+```
+
+An empty `tree` uses only the supplied candidate paths; omitting it adds the bounded workspace tree. `REQUIRE_BIGGER_MODEL` stops the queue and returns the escalated task plus `remainingTasks`, without spawning another model. Evidence is raw file content, not a generated report.
+
+The command uses the configured `dispatcher` budgets. Every decision attempt counts toward `maxStepsPerTask`, including invalid answers or empty read selections. Empty selections also consume the invalid-choice budget.
+
+After updating extension code, use `/reload-plugins` or restart OMP. `/jev reload` reloads configuration only.
+
+
 ## Files and precedence
 
 Default global directory: `~/.config/omp-jev`. An absolute `$XDG_CONFIG_HOME` changes this to `$XDG_CONFIG_HOME/omp-jev`; an absolute `$OMP_JEV_CONFIG_DIR` overrides the directory directly.

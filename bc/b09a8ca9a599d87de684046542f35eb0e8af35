@@ -1,0 +1,24 @@
+examples/jev.json
+  h_76aab65d18d7a3 42
+src/config.ts
+  h_76aab65d18d7a3 156
+src/extension.ts
+  h_76aab65d18d7a3 131-147,162,171-174,176,314-315,563-565,686
+src/native-rules.ts
+  h_76aab65d18d7a3 53,69,71,75-76
+src/types.ts
+  h_76aab65d18d7a3 91
+test/native-rules.test.ts
+  h_76aab65d18d7a3 9,47,61,118-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bcb09a8ca9a599d87de684046542f35eb0e8af35",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

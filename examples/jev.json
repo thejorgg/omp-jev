@@ -39,8 +39,7 @@
 	"nativeRules": {
 		"enabled": true,
 		"minConfidence": 0.9,
-		"minProbability": 0.9,
-		"names": ["ts-no-local-is-record", "ts-no-tiny-functions", "ts-set-map"]
+		"minProbability": 0.9
 	},
 	"recovery": {
 		"enabled": true,

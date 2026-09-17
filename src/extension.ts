@@ -128,23 +128,23 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	};
 	const client =
 		(session: Session): Evaluate =>
-		async (state, questions, signal) => {
-			const cleanState = redact(state, session.config);
-			const cleanQuestions = Object.fromEntries(
-				Object.entries(questions).map(([id, question]) => [
-					id,
-					validateQuestion(redact(question, session.config)),
-				]),
-			);
-			if (JSON.stringify(cleanState).length > session.config.context.maxChars)
-				throw new Error("Jev state exceeds context.maxChars");
-			return evaluate(
-				session.config.client,
-				cleanState,
-				cleanQuestions,
-				signal,
-			);
-		};
+			async (state, questions, signal) => {
+				const cleanState = redact(state, session.config);
+				const cleanQuestions = Object.fromEntries(
+					Object.entries(questions).map(([id, question]) => [
+						id,
+						validateQuestion(redact(question, session.config)),
+					]),
+				);
+				if (JSON.stringify(cleanState).length > session.config.context.maxChars)
+					throw new Error("Jev state exceeds context.maxChars");
+				return evaluate(
+					session.config.client,
+					cleanState,
+					cleanQuestions,
+					signal,
+				);
+			};
 	const selectRules = (
 		session: Session,
 		event: RuleEvent,
@@ -159,7 +159,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 						(rule.tools.includes(tool) || rule.tools.includes("*")))) &&
 				(rule.outcomes.some((outcome) => outcome.action.type === "block") ||
 					session.turn - (session.lastActions.get(rule.id) ?? -Infinity) >
-						(rule.cooldownTurns ?? 0)),
+					(rule.cooldownTurns ?? 0)),
 		);
 	const ruleQuestions = (rules: Rule[]): Record<string, Question> =>
 		Object.fromEntries(
@@ -168,12 +168,12 @@ export default function jevExtension(pi: ExtensionAPI): void {
 				rule.state === undefined
 					? rule.question
 					: {
-							...rule.question,
-							instructions: {
-								question: rule.question.instructions,
-								ruleState: rule.state,
-							},
+						...rule.question,
+						instructions: {
+							question: rule.question.instructions,
+							ruleState: rule.state,
 						},
+					},
 			]),
 		);
 	const ruleState = (rules: Rule[]): Record<string, Json> =>
@@ -311,8 +311,8 @@ export default function jevExtension(pi: ExtensionAPI): void {
 				: [];
 		const eligible = config.delegation.enabled
 			? tasks.flatMap((task, index) =>
-					eligibleTask(task, config.delegation.overrideExplicit) ? [index] : [],
-				)
+				eligibleTask(task, config.delegation.overrideExplicit) ? [index] : [],
+			)
 			: [];
 		for (const index of eligible)
 			questions[`delegate_${index}`] = delegationQuestion(index);
@@ -560,9 +560,9 @@ export default function jevExtension(pi: ExtensionAPI): void {
 			);
 			const actions = rules.length
 				? matches(session, rules, result.answers).map((match) => ({
-						rule: match.rule.id,
-						message: match.action.message,
-					}))
+					rule: match.rule.id,
+					message: match.action.message,
+				}))
 				: [];
 			return {
 				content: [
@@ -683,7 +683,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 						`Jev: ${enabled(session) ? "active" : "inactive"}; key ${process.env[session.config.client.apiKeyEnv] ? "configured" : "missing"} (${session.config.client.apiKeyEnv})`,
 						`Model: ${session.config.client.model}; endpoint: ${session.config.client.endpoint}`,
 						`Thinking: ${session.config.thinking.enabled}; delegation: ${session.config.delegation.enabled}; safety: ${session.config.safety.enabled}; recovery: ${session.config.recovery.enabled}`,
-						`Native rule relevance: ${session.config.nativeRules.enabled} (model context only; cannot prevent native UI/interrupt).`,
+						`Native rule relevance: ${session.config.nativeRules.enabled} (all triggered rules; inject by default, skip only confident contextual exemptions; model context only, cannot prevent native UI/interrupt).`,
 						`Rules: ${session.rules.filter((rule) => rule.enabled !== false).length} active. Last decision: ${session.lastDecision ?? "none"}`,
 						`Config (later wins): ${locations.config.join(" -> ")}`,
 						`Rules (project IDs override global): ${locations.rules.join(" -> ")}`,

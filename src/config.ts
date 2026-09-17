@@ -45,7 +45,6 @@ export const DEFAULT_CONFIG: JevConfig = {
 		enabled: true,
 		minConfidence: 0.9,
 		minProbability: 0.9,
-		names: ["ts-no-local-is-record", "ts-no-tiny-functions", "ts-set-map"],
 	},
 	recovery: {
 		enabled: true,
@@ -154,7 +153,7 @@ const CONFIG_SCHEMA: { [key: string]: SchemaNode } = {
 		onUncertain: oneOf("block", "allow"),
 		onError: oneOf("block", "allow"),
 	},
-	nativeRules: { ...POLICY, names: stringList },
+	nativeRules: POLICY,
 	recovery: { ...POLICY, maxContinuations: boundedInt(0, 3) },
 };
 

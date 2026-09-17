@@ -208,11 +208,24 @@ test("glob fails closed when the extension runtime supplies no BUILTIN_TOOLS/Set
 test("long source lines are reported as incomplete evidence", async () => {
 	fs.writeFileSync(
 		path.join(workspace, "long-line.ts"),
-		`${"x".repeat(1000)}HIDDEN_TAIL\n`,
+		`${"x".repeat(8192)}HIDDEN_TAIL\n`,
 	);
 	const result = await tools().execute({ tool: "read", path: "long-line.ts" });
 	expect(result.truncated).toBe(true);
 	expect(result.text).not.toContain("HIDDEN_TAIL");
+});
+
+test("read preserves compact JSON values beyond search-snippet width", async () => {
+	const json = JSON.stringify({
+		description: "x".repeat(1000),
+		refreshEndpoint: "/session/refresh",
+	});
+	fs.writeFileSync(path.join(workspace, "compact.json"), json);
+	const result = await tools().execute({ tool: "read", path: "compact.json" });
+	expect(result.truncated).toBe(false);
+	expect(
+		JSON.parse(result.text.slice(result.text.indexOf("|") + 1)).refreshEndpoint,
+	).toBe("/session/refresh");
 });
 
 test("AST results expose a cap even when exactly one match is omitted", async () => {

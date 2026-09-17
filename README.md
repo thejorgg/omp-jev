@@ -132,9 +132,11 @@ For several tasks or explicit candidate files, pass the same JSON shape as the t
 /jev dispatcher {"tasks":[{"id":"manifest","description":"Read package.json to find the test command","paths":["package.json"]},{"id":"config","description":"Read tsconfig.json to find compiler options","paths":["tsconfig.json"]}],"tree":""}
 ```
 
-Omitting `tree` inventories up to 10,000 workspace files and enables repository-wide bootstrap search. Supplying `tree` replaces that inventory with explicit candidates; `tree: ""` starts from `paths` alone. Related locations discovered through navigation can still be followed. Results are bounded evidence, not a guarantee that every related file has been found.
+Omitting `tree` inventories up to 10,000 workspace files and enables repository-wide bootstrap search. Supplying `tree` replaces that inventory with explicit candidates; `tree: ""` starts from `paths` alone. With an explicit scope, Jev can choose file reads or a scoped grep; no search is forced before that choice. Related locations discovered through navigation can still be followed. Results are bounded evidence, not a guarantee that every related file has been found.
 
 Defaults: 12 decision steps per task, four actions per batch, 12 offered actions per decision, 32 total tool calls including inventory, and 24,000 retained evidence characters. `dispatcher.timeoutMs` defaults to 5,000 ms per Jev request; language servers use OMP's own timeouts and may take longer on first use.
+
+Read evidence preserves up to 4,096 characters per source line; longer lines are explicitly marked as truncated. Search snippets remain capped at 400 characters. The 1 MiB file-read window and shared evidence budget still apply.
 
 `minReadProbability` controls action selection and file relevance. `minConfidence` and `minProbability` gate accepted stop/escalation choices. When that choice is uncertain, independently accepted read-only actions may gather more evidence. Rejected candidates are deferred until new evidence arrives; an entirely rejected window advances without replaying it. Every decision attempt consumes a step. `maxInvalidChoices` bounds repeated unusable continuation selections.
 

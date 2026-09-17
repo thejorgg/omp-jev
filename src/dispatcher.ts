@@ -430,9 +430,13 @@ export class DispatchEngine {
 				collect(actions[i], observation),
 			);
 		};
-		// One native search locates exact terms across the whole repo before any classifier round.
-		if (search && state.result.toolCalls < budget.maxToolCalls)
-			await run([search]);
+		// Unrestricted discovery bootstraps from content; explicit scopes let Jev
+		// choose whether a search adds anything beyond reading the supplied files.
+		if (search) {
+			if (input.tree !== undefined) add(search, 50);
+			else if (state.result.toolCalls < budget.maxToolCalls)
+				await run([search]);
+		}
 		if (input.tree === undefined) {
 			for (const term of terms.filter(identifier).slice(0, 3))
 				add({ tool: "lsp", action: "symbols", file: "*", query: term }, 40);

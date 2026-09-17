@@ -43,6 +43,7 @@ const INVENTORY_TIMEOUT_MS = 20_000;
 const READ_WINDOW_BYTES = 1024 * 1024;
 const READ_DEFAULT_LINES = 200;
 const READ_MAX_LINES = 1000;
+const READ_LINE_MAX_CHARS = 4096;
 const TEXT_MAX_LINES = 400;
 const LINE_MAX_CHARS = 400;
 const LOCATIONS_MAX = 300;
@@ -123,8 +124,8 @@ function clip(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function clipLine(line: string): string {
-	return clip(line.replace(/\r$/, ""), LINE_MAX_CHARS);
+function clipLine(line: string, max = LINE_MAX_CHARS): string {
+	return clip(line.replace(/\r$/, ""), max);
 }
 
 function requireString(value: unknown, what: string): string {
@@ -405,7 +406,7 @@ export function createDiscoveryTools(
 		}
 		const page = lines.slice(offset - 1, offset - 1 + limit);
 		const outLines = page.map(
-			(line, idx) => `${offset + idx}|${clipLine(line)}`,
+			(line, idx) => `${offset + idx}|${clipLine(line, READ_LINE_MAX_CHARS)}`,
 		);
 		const nextOffset =
 			offset - 1 + page.length < lines.length
@@ -413,7 +414,7 @@ export function createDiscoveryTools(
 				: undefined;
 		const extra: Partial<DiscoveryObservation> = {
 			nextOffset,
-			truncated: page.some((line) => line.length > LINE_MAX_CHARS),
+			truncated: page.some((line) => line.length > READ_LINE_MAX_CHARS),
 		};
 		if (stat.size > READ_WINDOW_BYTES) {
 			outLines.push(

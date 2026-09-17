@@ -367,7 +367,7 @@ test("uncertain stopping decisions gather confidently selected source evidence",
 
 test("a bounded batch collects the strongest selected evidence first", async () => {
 	const h = harness({
-		budget: { maxActionsPerStep: 1, maxToolCalls: 2 },
+		budget: { maxActionsPerStep: 1, maxToolCalls: 1 },
 		execute: async (action) =>
 			action.tool === "read"
 				? {
@@ -498,3 +498,69 @@ test("rejected windows advance and rejected reads return after new evidence", as
 		"RELATED_CALLER_BODY",
 	);
 });
+
+for (const selectedTool of ["read", "grep"] as const) {
+	test(`explicit scopes can select ${selectedTool} without an extra search`, async () => {
+		const h = harness({
+			execute: async (action) => ({
+				...hit("src/service.ts"),
+				text:
+					action.tool === "read"
+						? "COMPLETE_SOURCE_BODY"
+						: "MATCHED_SOURCE_LINE",
+			}),
+			decision: (state, questions) => {
+				const { actions, completedActions } = state as {
+					actions: Array<{ id: string; tool: string }>;
+					completedActions: string[];
+				};
+				const choice = completedActions.length
+					? TASK_FINISHED
+					: EXECUTE_SELECTED;
+				return Object.fromEntries(
+					Object.entries(questions).map(([id, question]) => [
+						id,
+						question.type === "choice"
+							? {
+									type: "choice",
+									choice,
+									confidence: 1,
+									probabilities: Object.fromEntries(
+										Object.keys(question.criteria).map((label) => [
+											label,
+											label === choice ? 1 : 0,
+										]),
+									),
+								}
+							: {
+									type: "noul",
+									noul:
+										id.startsWith("relevance_") ||
+										actions.some(
+											(action) =>
+												action.id === id && action.tool === selectedTool,
+										)
+											? 1
+											: 0,
+								},
+					]),
+				);
+			},
+		});
+		const result = await h.engine.dispatch({
+			tasks: [
+				{
+					id: "source",
+					description: "Read service source",
+					paths: ["src/service.ts"],
+				},
+			],
+			tree: "",
+		});
+		expect(result.status).toBe("finished");
+		expect(result.toolCalls).toBe(1);
+		expect(result.results[0].evidence.join("\n")).toContain(
+			selectedTool === "read" ? "COMPLETE_SOURCE_BODY" : "MATCHED_SOURCE_LINE",
+		);
+	});
+}

@@ -224,6 +224,7 @@ export class DispatchEngine {
 		if (!universe.length) return { status: NO_PATH };
 		while (active.steps < this.dispatcher.maxStepsPerTask) {
 			this.throwIfAborted(budget.signal);
+			active.steps++;
 			const done = completedPaths(active);
 			const pending = universe.filter((path) => !done.has(path));
 			if (!pending.length)
@@ -238,7 +239,17 @@ export class DispatchEngine {
 				budget.signal,
 			).then((result) => result.answers);
 			const next = this.accepted(answers.next_action);
-			if (!next) {
+			const selected =
+				next?.choice === READ_SELECTED
+					? offered.filter((_path, index) => {
+							const answer = answers[`read_${index}`];
+							return (
+								answer?.type === "noul" &&
+								answer.noul >= this.dispatcher.minReadProbability
+							);
+						})
+					: [];
+			if (!next || (next.choice === READ_SELECTED && !selected.length)) {
 				active.invalidChoices++;
 				if (active.invalidChoices > this.dispatcher.maxInvalidChoices)
 					return {
@@ -254,18 +265,6 @@ export class DispatchEngine {
 			if (next.choice === NO_PATH) return { status: NO_PATH };
 			if (next.choice === REQUIRE_BIGGER_MODEL)
 				return { status: REQUIRE_BIGGER_MODEL, evidence: active.evidence };
-			// READ_SELECTED: gather this step's noul-selected batch.
-			const selected = offered.filter((path, index) => {
-				const answer = answers[`read_${index}`];
-				return (
-					answer?.type === "noul" &&
-					answer.noul >= this.dispatcher.minReadProbability
-				);
-			});
-			if (!selected.length) {
-				active.invalidChoices++;
-				continue;
-			}
 			const batch = selected.slice(0, this.dispatcher.maxActionsPerStep);
 			const read = await Promise.all(
 				batch.map(async (path) => {
@@ -298,7 +297,6 @@ export class DispatchEngine {
 					summary: "tool-call budget exhausted",
 					evidence: active.evidence,
 				};
-			active.steps++;
 			if (this.evidenceSize(active) > this.dispatcher.maxEvidenceChars)
 				return { status: TASK_FINISHED, summary: this.summarize(active) };
 		}

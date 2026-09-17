@@ -254,6 +254,23 @@ test("invalid or low-confidence choices are retried, then escalate", async () =>
 	assert.equal(result.status, "finished");
 });
 
+test("repeated empty read selections escalate within the invalid-choice budget", async () => {
+	const h = harness({ maxInvalidChoices: 1 });
+	let decisions = 0;
+	h.setAnswers(() => ({
+		next_action: choice(++decisions <= 2 ? READ_SELECTED : TASK_FINISHED),
+		read_0: noul(0),
+	}));
+	const result = await h.engine.dispatch({
+		tasks: [{ id: "read", description: "Read a.ts", paths: ["a.ts"] }],
+		tree: "",
+	});
+	assert.equal(result.status, "escalated");
+	assert.equal(result.results[0].status, REQUIRE_BIGGER_MODEL);
+	assert.equal(decisions, 2);
+	assert.deepEqual(h.reads, []);
+});
+
 test("no paths and no tree produces NO_PATH without any Jev call", async () => {
 	const h = harness();
 	h.setAnswers(() => ({ next_action: choice(NO_PATH) }));

@@ -534,4 +534,88 @@ describe("extension policy consequences", () => {
 		// The reader rejects the escape; Jev is offered no candidates it can use.
 		expect(details.results[0].summary).not.toContain("root:");
 	});
+
+	test("dispatcher command runs once without enabling automatic policies or the tool", async () => {
+		const h = await harness({
+			config: { enabled: false, dispatcher: { enabled: false } },
+			choices: { next_action: "READ_SELECTED" },
+		});
+		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
+		await h.commands.jev("dispatcher Read a.ts", h.ctx);
+		expect(h.messages).toContainEqual(
+			expect.objectContaining({
+				customType: "jev-dispatcher",
+				display: true,
+				details: expect.objectContaining({
+					status: "finished",
+					results: [
+						expect.objectContaining({
+							status: "TASK_FINISHED",
+							summary: expect.stringContaining("export const alpha = 1;"),
+						}),
+					],
+				}),
+			}),
+		);
+		await expect(
+			h.tools.jev_dispatch.execute(
+				"still-disabled",
+				{ tasks: [{ id: "read", description: "Read a.ts" }] },
+				undefined,
+				undefined,
+				h.ctx,
+			),
+		).rejects.toThrow(/disabled/);
+		await h.run("before_agent_start", { prompt: "Keep native behavior" });
+		expect(h.levels).toEqual([]);
+		expect(h.switches()).toEqual([]);
+	});
+
+	test("dispatcher command hands back an escalated task and the untouched queue", async () => {
+		const h = await harness({
+			config: { enabled: false },
+			choices: { next_action: "REQUIRE_BIGGER_MODEL" },
+		});
+		const tasks = [
+			{ id: "investigate", description: "Explain the architecture" },
+			{ id: "later", description: "Inspect the tests" },
+		];
+		await h.commands.jev(
+			`dispatcher ${JSON.stringify({ tasks, tree: "a.ts" })}`,
+			h.ctx,
+		);
+		expect(h.messages).toContainEqual(
+			expect.objectContaining({
+				customType: "jev-dispatcher",
+				details: expect.objectContaining({
+					status: "escalated",
+					results: [
+						expect.objectContaining({
+							task: tasks[0],
+							status: "REQUIRE_BIGGER_MODEL",
+						}),
+					],
+					remainingTasks: [tasks[1]],
+				}),
+			}),
+		);
+		expect(h.requests).toHaveLength(1);
+		expect(h.switches()).toEqual([]);
+	});
+
+	test("dispatcher command validates the entire JSON queue before sending data", async () => {
+		const h = await harness({ config: { enabled: false } });
+		await h.commands.jev(
+			`dispatcher ${JSON.stringify({
+				tasks: [
+					{ id: "valid", description: "Read a.ts" },
+					{ id: "invalid", description: 42 },
+				],
+			})}`,
+			h.ctx,
+		);
+		expect(h.requests).toEqual([]);
+		expect(h.messages).toEqual([]);
+		expect(h.notices().at(-1)).toMatch(/description/);
+	});
 });

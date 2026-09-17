@@ -108,6 +108,29 @@ Opt-in via `dispatcher.enabled` in the main config. Exposes the `jev_dispatch` t
 Each task ends `TASK_FINISHED` (with collected file evidence), `NO_PATH`, or `REQUIRE_BIGGER_MODEL`, which returns control to the caller to dispatch a real `smol`/`slow` subagent. Reads are workspace-local regular files only (symlink-resolved, size-capped); no writes, MCP, skills or user input. Budgets are configurable: per-task steps, reads per step, candidates offered per step, total tool calls, evidence size and invalid-choice retries.
 
 This is not a replacement for OMP's native todo/subagent flow; it saves LLM tool-calls on mechanical discovery. Jev cannot invent grep patterns or free text, so candidate paths come from the caller and the tree.
+### Try it from chat
+
+With `TYPESAFE_API_KEY` in OMP's environment (or your configured `client.apiKeyEnv`), run:
+
+```text
+/jev dispatcher
+/jev dispatcher Read package.json to find the test command.
+```
+
+The bare command shows help. A task runs immediately through Jev without enabling the plugin's automatic policies or the `jev_dispatch` tool. Results and file evidence remain in chat; no LLM turn starts. Wait for any active agent/orchestrator run to finish first.
+
+For several tasks or explicit candidate files, pass the same JSON shape as the tool:
+
+```text
+/jev dispatcher {"tasks":[{"id":"manifest","description":"Read package.json to find the test command","paths":["package.json"]},{"id":"config","description":"Read tsconfig.json to find compiler options","paths":["tsconfig.json"]}],"tree":""}
+```
+
+An empty `tree` uses only the supplied candidate paths; omitting it adds the bounded workspace tree. `REQUIRE_BIGGER_MODEL` stops the queue and returns the escalated task plus `remainingTasks`, without spawning another model. Evidence is raw file content, not a generated report.
+
+The command uses the configured `dispatcher` budgets. Every decision attempt counts toward `maxStepsPerTask`, including invalid answers or empty read selections. Empty selections also consume the invalid-choice budget.
+
+After updating extension code, use `/reload-plugins` or restart OMP. `/jev reload` reloads configuration only.
+
 
 ## Files and precedence
 

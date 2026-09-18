@@ -2,16 +2,27 @@
 
 TypeSafe Jev routing for Oh My Pi, with an opt-in checkpoint orchestrator and editable XDG configuration. Requires Bun >= 1.3.14 and OMP >= 18.2.3.
 
-## Edit everything in nano
+## Install from npm
 
-From this checkout:
+Install the published [`omp-jev`](https://www.npmjs.com/package/omp-jev) package through OMP:
 
 ```sh
-bun install
-bun bin/omp-jev.ts config --editor nano
+omp install omp-jev
 ```
 
-Or expose the CLI with `bun link`, then:
+Restart OMP or run `/reload-plugins` in an existing session to load the extension. Use `/jev status` to check it loaded. The plugin's judgments are disabled by default; run `/jev enable` when ready to use them.
+
+The extension can be configured inside OMP with `/jev config all`; no standalone CLI installation is required. To also make the `omp-jev` command available in your shell:
+
+```sh
+bun install --global omp-jev
+```
+
+The global CLI install does not register the extension with OMP; use `omp install omp-jev` for that.
+
+## Edit everything in nano
+
+With the standalone CLI installed:
 
 ```sh
 omp-jev config --editor nano           # opens all three global configs
@@ -21,6 +32,13 @@ omp-jev config main                   # API, context, safety and existing routin
 omp-jev config all --project          # project overrides
 omp-jev paths                        # print exact filenames
 omp-jev check                        # validate effective settings without editing
+```
+
+From a source checkout instead:
+
+```sh
+bun install
+bun bin/omp-jev.ts config --editor nano
 ```
 
 Editor precedence: `--editor`, `$VISUAL`, `$EDITOR`, then `nano`. Commands with flags and quoted executable paths are supported, without invoking a shell. The CLI creates missing documents, preserves existing ones, and validates after a successful editor exit. Invalid edits are saved alongside the file as `.invalid-...` drafts, then the previous documents are restored. A nonzero editor exit leaves edits on disk and reports the failure; run `omp-jev check` before reloading.

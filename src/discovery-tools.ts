@@ -16,6 +16,11 @@ import type {
 	ToolSession,
 } from "@oh-my-pi/pi-coding-agent";
 import { isRecord } from "./guards.js";
+import {
+	type RankedMatch,
+	rankFiles,
+	searchTerms,
+} from "./discovery-ranking.js";
 import type {
 	DiscoveryAction,
 	DiscoveryInventory,
@@ -35,6 +40,13 @@ const GREP_MAX_MEMBERS = 200;
 const GREP_NATIVE_MATCH_CAP = 2000;
 const GREP_PER_FILE_CAP = 15;
 const GREP_TIMEOUT_MS = 15_000;
+// Ranked grep (`query` actions): bounded per-term keyword scans so common
+// words cannot consume a file's whole sample before a discriminative term.
+const RANK_PAGE_FILES = 16;
+const RANK_TERM_MAX_MATCHES = 4000;
+const RANK_TERM_PER_FILE = 8;
+const RANK_CONCURRENCY = 4;
+const RANK_SNIPPET_MAX_CHARS = 240;
 const AST_MATCH_LIMIT = 100;
 const AST_TIMEOUT_MS = 15_000;
 const GLOB_LIMIT = 200;
@@ -58,11 +70,33 @@ const LSP_FILE_ACTIONS: Record<string, true> = {
 	hover: true,
 };
 
-/** Non-dotfile secret stores that must never surface through implicit
- * discovery. Dotfiles (.env*, .git, .ssh, …) are already excluded because
- * every implicit scan runs with hidden files disabled. */
+/** Key-store filenames excluded from implicit discovery and, when enabled,
+ * explicit planner discovery. */
 const SECRET_FILE_RE = /\.(?:pem|key|p12|pfx|jks|keystore|kdbx)$/i;
 const SECRET_KEY_BASE_RE = /^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.|$)/i;
+const SENSITIVE_DOTFILE_RE = /^(?:\.env(?:\..*)?|\.(?:npmrc|pypirc|netrc))$/i;
+const SENSITIVE_DIRECTORY_NAMES: Record<string, true> = {
+	".ssh": true,
+	".aws": true,
+	".gnupg": true,
+};
+
+const isSecretName = (base: string): boolean =>
+	SECRET_FILE_RE.test(base) || SECRET_KEY_BASE_RE.test(base);
+
+const isSensitivePath = (root: string, candidate: string): boolean => {
+	const relative = path.relative(root, candidate);
+	if (relative.length === 0) return false;
+	const parts = relative.split(/[\\/]/).filter(Boolean);
+	const base = parts[parts.length - 1];
+	return (
+		parts.some((part) =>
+			Object.hasOwn(SENSITIVE_DIRECTORY_NAMES, part.toLowerCase()),
+		) ||
+		(base !== undefined &&
+			(isSecretName(base) || SENSITIVE_DOTFILE_RE.test(base)))
+	);
+};
 
 /** Minimal structural view of a built OMP tool; avoids the AgentTool generics. */
 interface ToolCallResult {
@@ -201,8 +235,13 @@ function viewGlobDetails(raw: unknown): GlobDetailsView {
  */
 export function createDiscoveryTools(
 	pi: ExtensionAPI,
-	ctx: ExtensionContext,
+	ctx: {
+		cwd: string;
+		sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionFile">;
+	},
+	options: { excludeSensitiveFiles?: boolean } = {},
 ): DiscoveryTools {
+	const excludeSensitiveFiles = options.excludeSensitiveFiles === true;
 	let cachedRoot: string | undefined;
 	let cachedTools:
 		| Promise<{ glob: ExecutableTool | null; lsp: ExecutableTool | null }>
@@ -243,6 +282,13 @@ export function createDiscoveryTools(
 		) {
 			fail(`${what} escapes the workspace: ${clip(cleaned, 200)}`);
 		}
+		if (
+			excludeSensitiveFiles &&
+			(isSensitivePath(root, abs) || isSensitivePath(root, real))
+		)
+			fail(
+				`${what} is excluded by the sensitive-file policy: ${clip(cleaned, 200)}`,
+			);
 		return real;
 	};
 
@@ -262,11 +308,13 @@ export function createDiscoveryTools(
 			path.isAbsolute(rel)
 		)
 			return null;
+		if (
+			excludeSensitiveFiles &&
+			(isSensitivePath(root, abs) || isSensitivePath(root, real))
+		)
+			return null;
 		return real;
 	};
-
-	const isSecretName = (base: string): boolean =>
-		SECRET_FILE_RE.test(base) || SECRET_KEY_BASE_RE.test(base);
 
 	/** Files surfaced by implicit discovery and whose content may be returned:
 	 * regular, not a symlink, not a secret store, and realpath-confined. */
@@ -404,19 +452,26 @@ export function createDiscoveryTools(
 				`read offset ${offset} is past end of file (${lines.length} lines): ${action.path}`,
 			);
 		}
-		const page = lines.slice(offset - 1, offset - 1 + limit);
+		// The observation text budget caps every emitted page, so nextOffset
+		// always points at the first unread line. A page must never be cut by
+		// the budget while nextOffset skips past lines the caller has not seen.
+		const byteWindowNote = stat.size > READ_WINDOW_BYTES;
+		const pageLimit = Math.min(
+			limit,
+			Math.max(1, TEXT_MAX_LINES - (byteWindowNote ? 1 : 0)),
+		);
+		const page = lines.slice(offset - 1, offset - 1 + pageLimit);
+		const endLine = offset - 1 + page.length;
 		const outLines = page.map(
 			(line, idx) => `${offset + idx}|${clipLine(line, READ_LINE_MAX_CHARS)}`,
 		);
-		const nextOffset =
-			offset - 1 + page.length < lines.length
-				? offset + page.length
-				: undefined;
+		const numberedText = outLines.join("\n");
+		const nextOffset = endLine < lines.length ? endLine + 1 : undefined;
 		const extra: Partial<DiscoveryObservation> = {
 			nextOffset,
 			truncated: page.some((line) => line.length > READ_LINE_MAX_CHARS),
 		};
-		if (stat.size > READ_WINDOW_BYTES) {
+		if (byteWindowNote) {
 			outLines.push(
 				`… file truncated at the ${Math.floor(READ_WINDOW_BYTES / (1024 * 1024))} MiB read window (${stat.size} bytes total); lines beyond the window are missing …`,
 			);
@@ -424,7 +479,14 @@ export function createDiscoveryTools(
 		}
 		return boundObservation(
 			outLines,
-			[{ path: displayPath(root, real), line: offset }],
+			[
+				{
+					path: displayPath(root, real),
+					line: offset,
+					endLine,
+					text: numberedText,
+				},
+			],
 			extra,
 		);
 	};
@@ -530,16 +592,19 @@ export function createDiscoveryTools(
 
 	// -------------------------------------------------------------------------
 	// grep — native structured matches (gitignore-aware, case-insensitive),
-	// paginated by absolute file offset
+	// paginated by absolute file offset. With a natural-language `query`,
+	// ranked mode runs instead: bounded per-term keyword scans, then files
+	// ranked before paging (term logic in discovery-ranking.ts).
 	// -------------------------------------------------------------------------
 
-	const runGrep = async (
-		action: Extract<DiscoveryAction, { tool: "grep" }>,
-		signal?: AbortSignal,
-	): Promise<DiscoveryObservation> => {
-		throwIfAborted(signal);
+	/** Shared scope resolution for both grep modes: semicolon members are
+	 * realpath-confined; a member that exists but resolves outside the
+	 * workspace is a hard failure, an absent member only narrows scope
+	 * (surfaced as a note). Priorities never change the authorized scope. */
+	const resolveGrepScopes = (action: {
+		path?: string;
+	}): { scopes: string[]; missing: string[] } => {
 		const root = workspaceRoot();
-		const pattern = requireString(action.pattern, "grep pattern");
 		const members = splitMembers(action.path, "grep path", GREP_MAX_MEMBERS);
 		const scopes: string[] = [];
 		const missing: string[] = [];
@@ -559,6 +624,17 @@ export function createDiscoveryTools(
 			if (!exists) missing.push(member);
 			else scopes.push(confine(member, "grep path"));
 		}
+		return { scopes, missing };
+	};
+
+	const runGrep = async (
+		action: Extract<DiscoveryAction, { tool: "grep" }>,
+		signal?: AbortSignal,
+	): Promise<DiscoveryObservation> => {
+		throwIfAborted(signal);
+		const root = workspaceRoot();
+		const pattern = requireString(action.pattern, "grep pattern");
+		const { scopes, missing } = resolveGrepScopes(action);
 		interface ScopedMatch {
 			abs: string;
 			lineNumber: number;
@@ -661,6 +737,171 @@ export function createDiscoveryTools(
 			hasMore ||
 				nativeLimitReached ||
 				totalMatches > all.length ||
+				droppedFiles > 0 ||
+				missing.length > 0,
+		);
+		return boundObservation(outLines, locations, { ...extra, truncated });
+	};
+
+	// -------------------------------------------------------------------------
+	// grep ranked mode — a natural-language query triggers bounded independent
+	// keyword scans (one per extracted term, so a common word cannot consume a
+	// file's whole per-term sample before a discriminative term), then files
+	// are ranked before paging. The page exposes compact ranked snippets; the
+	// engine reads actual context from the files it selects.
+	// -------------------------------------------------------------------------
+
+	const runRankedGrep = async (
+		action: Extract<DiscoveryAction, { tool: "grep" }>,
+		signal?: AbortSignal,
+	): Promise<DiscoveryObservation> => {
+		throwIfAborted(signal);
+		const root = workspaceRoot();
+		const query = requireString(action.query, "grep query");
+		const terms = searchTerms(query);
+		if (terms.length === 0)
+			fail(`grep query produced no searchable terms: ${clip(query, 200)}`);
+		const { scopes, missing } = resolveGrepScopes(action);
+		if (scopes.length === 0)
+			return observation(
+				`grep "${clip(query, 120)}" ranked — no searchable paths\nSkipped missing paths: ${missing.join(", ")}`,
+				[],
+				{ truncated: true },
+			);
+		// Page size hint (dispatcher budget); ranked mode only, 1..RANK_PAGE_FILES.
+		const pageSize =
+			action.limit === undefined
+				? RANK_PAGE_FILES
+				: Math.min(
+						RANK_PAGE_FILES,
+						requireFiniteInt(action.limit, "grep limit", 1),
+					);
+
+		const jobs: Array<{ term: string; scope: string }> = [];
+		for (const term of terms)
+			for (const scope of scopes) jobs.push({ term, scope });
+
+		// (path, line) dedup across terms and overlapping scopes.
+		const byFile = new Map<string, Map<number, string>>();
+		let nativeLimitReached = false;
+		let collected = 0;
+		const failedTerms = new Set<string>();
+
+		let cursor = 0;
+		const runJob = async (): Promise<void> => {
+			while (cursor < jobs.length) {
+				const job = jobs[cursor++];
+				throwIfAborted(signal);
+				let result: GrepResult;
+				try {
+					result = await nativeGrep({
+						// Terms are literal keywords, never regex.
+						pattern: job.term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+						path: job.scope,
+						ignoreCase: true,
+						hidden: false,
+						gitignore: true,
+						maxCount: RANK_TERM_MAX_MATCHES,
+						maxCountPerFile: RANK_TERM_PER_FILE,
+						maxColumns: LINE_MAX_CHARS,
+						signal,
+						timeoutMs: GREP_TIMEOUT_MS,
+					});
+				} catch (err) {
+					if (isAbort(err, signal)) throw err;
+					// One failed keyword scan downgrades the page to partial
+					// evidence; only aborts become rejections.
+					failedTerms.add(job.term);
+					continue;
+				}
+				nativeLimitReached = nativeLimitReached || result.limitReached === true;
+				for (const match of result.matches) {
+					if (match.lineNumber < 1) continue;
+					const abs = path.isAbsolute(match.path)
+						? match.path
+						: path.resolve(job.scope, match.path);
+					let lines = byFile.get(abs);
+					if (!lines) {
+						lines = new Map<number, string>();
+						byFile.set(abs, lines);
+					}
+					if (!lines.has(match.lineNumber)) {
+						lines.set(match.lineNumber, match.line ?? "");
+						collected++;
+					}
+				}
+			}
+		};
+		await Promise.all(
+			Array.from({ length: Math.min(RANK_CONCURRENCY, jobs.length) }, runJob),
+		);
+
+		// Same safety gate as plain grep: secrets, symlinks, and anything that
+		// resolves outside the workspace never surface, on any code path.
+		const candidates = new Map<string, RankedMatch[]>();
+		let droppedFiles = 0;
+		for (const [abs, lines] of byFile) {
+			if (!isSafelyReadableScanFile(root, abs)) {
+				droppedFiles++;
+				continue;
+			}
+			const rel = displayPath(root, abs);
+			candidates.set(
+				rel,
+				[...lines.entries()]
+					.sort((a, b) => a[0] - b[0])
+					.map(([line, text]) => ({ line, text })),
+			);
+		}
+
+		// Rank before paging; skip/nextSkip address ranked candidate offsets.
+		const ranked = rankFiles(candidates, terms, query, action.priorities);
+		const skip =
+			action.skip === undefined
+				? 0
+				: requireFiniteInt(action.skip, "grep skip", 0);
+		const hasMore = skip + pageSize < ranked.length;
+		const nextSkip = hasMore ? skip + pageSize : undefined;
+		const page = ranked.slice(skip, skip + pageSize);
+
+		const outLines: string[] = [
+			`grep "${clip(query, 120)}" ranked — ${ranked.length} candidate file(s), ${collected} match line(s)`,
+			`terms: ${clip(terms.join(" "), 300)}`,
+		];
+		const locations: DiscoveryLocation[] = [];
+		for (const file of page) {
+			outLines.push(`${file.path} — ${file.termsHit}/${terms.length} term(s)`);
+			for (const match of file.matches) {
+				const snippet = clipLine(match.text, RANK_SNIPPET_MAX_CHARS);
+				outLines.push(`*${match.line}|${snippet}`);
+				if (locations.length < LOCATIONS_MAX)
+					locations.push({ path: file.path, line: match.line, text: snippet });
+			}
+		}
+		if (page.length === 0) outLines.push("No ranked candidates in this page");
+		const extra: Partial<DiscoveryObservation> = { nextSkip };
+		if (hasMore)
+			outLines.push(
+				`… more candidates matched; use skip=${nextSkip} for the next page …`,
+			);
+		if (nativeLimitReached)
+			outLines.push(
+				"… native per-term match cap reached; later lines in hot files may be missing …",
+			);
+		if (failedTerms.size > 0)
+			outLines.push(
+				`… keyword scans failed for: ${clip([...failedTerms].join(", "), 200)} …`,
+			);
+		if (droppedFiles > 0)
+			outLines.push(
+				`… ${droppedFiles} matched file(s) excluded (secret, symlinked, or outside the workspace) …`,
+			);
+		if (missing.length > 0)
+			outLines.push(`Skipped missing paths: ${missing.join(", ")}`);
+		const truncated = Boolean(
+			hasMore ||
+				nativeLimitReached ||
+				failedTerms.size > 0 ||
 				droppedFiles > 0 ||
 				missing.length > 0,
 		);
@@ -943,7 +1184,11 @@ export function createDiscoveryTools(
 				case "glob":
 					return await runGlob(action, signal);
 				case "grep":
-					return await runGrep(action, signal);
+					// A natural-language query selects ranked mode; plain pattern
+					// grep keeps its own semantics untouched.
+					return action.query !== undefined && action.query.trim().length > 0
+						? await runRankedGrep(action, signal)
+						: await runGrep(action, signal);
 				case "ast_grep":
 					return await runAst(action, signal);
 				case "lsp":

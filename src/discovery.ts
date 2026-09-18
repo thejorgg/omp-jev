@@ -4,7 +4,18 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 export type DiscoveryAction =
 	| { tool: "read"; path: string; offset?: number; limit?: number }
 	| { tool: "glob"; path: string }
-	| { tool: "grep"; pattern: string; path?: string; skip?: number }
+	| {
+			tool: "grep";
+			pattern: string;
+			path?: string;
+			skip?: number;
+			/** Ranked file page size, bounded by the backend. */
+			limit?: number;
+			/** Natural-language discovery ranks files before exposing match snippets. */
+			query?: string;
+			/** Semantic directory preferences; never change the authorized search scope. */
+			priorities?: Record<string, number>;
+	  }
 	| { tool: "ast_grep"; pattern: string; path: string; lang?: string }
 	| {
 			tool: "lsp";
@@ -24,6 +35,7 @@ export type DiscoveryAction =
 export interface DiscoveryLocation {
 	path: string;
 	line?: number;
+	endLine?: number;
 	symbol?: string;
 	text?: string;
 }

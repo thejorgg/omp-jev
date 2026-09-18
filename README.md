@@ -41,15 +41,54 @@ The in-OMP editor retains native Ctrl+G integration with `$VISUAL`/`$EDITOR`. Sh
 
 The plugin and its automatic judgment policies are disabled by default. Native OMP thinking, judgment/eval and guards remain in control; loading this extension does not add duplicate classifier calls. Keep `"enabled": false` in the global main config to disable all plugin judgments, including `jev_decide`. Existing sessions must run `/jev reload` (or `/jev disable` immediately).
 
+## Read-only planning (`jev_plan`)
+
+```text
+/jev plan Fix the login race without changing the public API
+/jev plan {"goal":"Add a timeout override","context":"Only change jev_decide.","model":"current"}
+/jev plan stop
+```
+
+Planning uses an isolated agent with workspace-confined read, glob, grep, AST and read-only LSP tools. It cannot edit files, run shell commands, invoke MCP tools, or start implementation. Selected repository evidence goes to the selected LLM provider through OMP's authentication, not to the TypeSafe classifier.
+
+The default is the **current model and effective thinking level at invocation**. An explicit `model` uses OMP's model selectors; an unresolved selector fails instead of falling back. A later parent-model change does not alter an in-flight plan, and planning never switches the parent model.
+
+AI callers can invoke `jev_plan` concurrently with independent goals, contexts, budgets and cancellation signals:
+
+```json
+{"goal":"Plan a per-call timeout for jev_decide","context":"Preserve configured defaults","model":"current"}
+```
+
+Supply a self-contained goal and any necessary `context`: parent conversation, system prompts and previous tool results are not copied automatically. The tool requires `/jev enable` or `"enabled": true`; the explicit command works as a one-off without enabling automatic policies. Both require authentication for the chosen LLM, but neither needs a TypeSafe key solely for planning.
+
+Results distinguish `ready`, `needs_input`, `incomplete` and `aborted`. Ready plans contain task IDs, dependencies, suggested roles, acceptance checks and references validated against source ranges actually read. `nextTask` is the first dependency-free task, not permission to execute it. Only ready plans expose a next task; limits, provider failures and cancellation preserve partial evidence without declaring readiness.
+
+The complete bounded plan appears in tool text and structured `details`; the command displays it in chat without steering an active parent or triggering a worker. A successful command remembers its goal for a later explicit `/jev run`; tool calls never replace that goal. `/jev plan stop` cancels command-owned planning only. Reload, disable, session navigation, workspace moves and shutdown invalidate that command's result.
+
+Planning is bounded by 16 model calls, 48 discovery actions, 320,000 serialized-context characters, 8,192 output tokens per call and a 180-second wall deadline. Goals over 8,000 characters and explicit context over 32,000 characters are rejected, never silently clipped. Source references establish what was read, not that every recommendation is correct. Review the result before execution. Planning excludes common credential stores, including dotenv files, private-key files and `.ssh`/`.aws`/`.gnupg` paths, even when the model requests them explicitly. This is filename/path filtering, not a guarantee that ordinary source or caller-supplied context contains no secrets. Pending host credential refreshes may outlive cancellation, but cannot resume the cancelled planner.
+
+### Local planning benchmark
+
+The frozen 12-case repository benchmark used `openai-codex/gpt-6-astra`, high thinking: eight development cases and four held-out cases. Independent source-based grading covered grounding, completeness, dependencies, verification and scope/handoff (10 points per case).
+
+| Variant | Development | Held-out | Median time, development / held-out | Median result characters, development / held-out |
+| --- | ---: | ---: | ---: | ---: |
+| Direct Astra reference | 78/80 | 39/40 | 53.9s / 51.7s | 2,812 / 3,295 |
+| Previous planning prompt | 71/80 | Not run | 37.7s / — | 1,882 / — |
+| Structured-handoff prompt experiment | 78/80 | Not run | 63.5s / — | 3,793 / — |
+| Isolated planner, frozen `integrated-v4` | 77/80 | 40/40 | 77.1s / 117.3s | 7,103 / 8,892 |
+
+The isolated planner matched the reference's combined **117/120**, not a demonstrated quality improvement over it. All 12 final outcomes were structurally valid: ten `ready`, two `needs_input`; no benchmark implementation was executed. Development deductions concern an underspecified post-decision persistence plan and caller-role reporting. It was slower and returned more text; its benefit is isolated, read-only, parallel planning with a validated handoff—not lower measured latency or output size.
+
+The first live integrated development run scored 69/80: one case exhausted the original 160,000-character context limit and returned `incomplete`. The context limit was raised before the final prompt/budget freeze and held-out generation; that failure remains in the evidence. Later review fixes changed credential-file access, auth cancellation, command delivery/lifecycle and terminal rendering, not the frozen planning prompt, schemas or budgets. The table measures the pre-review `integrated-v4` snapshot, not a fresh quality benchmark of those fixes.
+
+These are single-run, same-repository measurements with different tool backends, not statistical proof or a guarantee for other models. [Preserved evidence](docs/solutions/planning-benchmark-2026-09-17.json) includes the cases, rubric/adjudication, source hashes, every scored output, unsuccessful attempts, token/output measurements and verification boundaries.
+
 ## Run the orchestrator
 
 For an explicit plugin-orchestrated run, use `/jev enable` in the current session first. This enables the plugin, but its thinking, delegation, safety, native-rule and recovery policies remain off unless individually enabled in configuration. Set `TYPESAFE_API_KEY` in the environment used to launch OMP, or change `client.apiKeyEnv` in the main config. Keep the key out of config files and version control. Configure OMP's `@slow` and `@smol` model roles, or replace the four model selectors in `orchestrator.json` with authenticated `provider/model-id` selectors.
 
-```text
-/jev plan Fix the login race without changing the public API
-```
-
-This asks the planner to inspect and propose a bounded plan, then stops. Discuss requirements and approve/refine the plan normally. It does not automatically begin implementation.
+Review a planning result and resolve any blockers before execution:
 
 ```text
 /jev run
@@ -64,7 +103,7 @@ This reuses the last explicit Jev goal in this session, asks the planner to reco
 
 `stop` cancels routing, aborts an in-flight router request, and prevents further routed stages. **It does not kill an already-running worker/tool; interrupt OMP for that.** User input, observed selection changes, session navigation, reload, shutdown and pending work also stop or pause routing. Runs do not silently resume across process restarts. Model/thinking restoration uses best-effort ownership checks, not an atomic host transaction.
 
-**Accepted concurrency limitation:** automatic switching is retained. OMP 18.2.3 exposes an unconditional asynchronous model setter without mutation ownership, cancellation or a selection revision. A manual model/thinking change made during a stage switch or restoration can be overwritten by the late plugin operation. Journal checks cannot reliably distinguish a host default/clamp from a user choice. Avoid native selection changes while these operations are in flight: run `/jev stop`, wait for its completion notice and any worker to finish, then change settings. The plugin does not guarantee preservation of concurrent manual selections.
+**Accepted execution-controller concurrency limitation:** automatic switching is retained in `/jev run`, not in isolated planning. OMP 18.2.3 exposes an unconditional asynchronous model setter without mutation ownership, cancellation or a selection revision. A manual model/thinking change made during an execution-stage switch or restoration can be overwritten by the late plugin operation. Journal checks cannot reliably distinguish a host default/clamp from a user choice. Avoid native selection changes while these operations are in flight: run `/jev stop`, wait for its completion notice and any worker to finish, then change settings. The execution controller does not guarantee preservation of concurrent manual selections.
 
 ## What runs where
 
@@ -79,7 +118,7 @@ Jev Choice -> deterministic controller -> OMP worker stage
 
 Jev selects only `inspect`, `implement_fast`, `implement_strong`, `test`, `debug`, `review`, `replan`, `done`, or `ask_user`. OMP generates code, tool arguments and explanations. There is no generative manager call between worker stages.
 
-This is a **same-session, model-switching checkpoint controller**, not a parallel subagent swarm or a per-tool action generator. The worker finishes its assigned stage before Jev decides the next stage. Workers retain the shared conversation and OMP's normal tool lifecycle, authentication and configured guards. Stage prompts are instructions, not sandbox-enforced permissions; a reviewer is instructed to inspect rather than edit.
+`/jev run` is a **same-session, model-switching checkpoint controller**, not a parallel execution swarm or a per-tool action generator. The worker finishes its assigned stage before Jev decides the next stage. Workers retain the shared conversation and OMP's normal tool lifecycle, authentication and configured guards. Stage prompts are instructions, not sandbox-enforced permissions; a reviewer is instructed to inspect rather than edit. This differs from the isolated, read-only `jev_plan` agent.
 
 Defaults:
 
@@ -90,7 +129,7 @@ Defaults:
 | Strong | `@slow` | high | Hard implementation and debugging |
 | Reviewer | `@slow` | high | Review before completion |
 
-Every model selector, thinking level and stage prompt is editable in `orchestrator.json`. The controller makes one bounded Jev Choice request per completed execution stage, with a separate 1,500 ms timeout, no retries, six recent visible messages and a 16,000-character state budget by default. `/jev plan` alone makes no next-action router call. `/jev status` and completion notices report observed router calls and elapsed routing time; no live latency/quality benchmark is implied.
+These execution-role model selectors, thinking levels and stage prompts are editable in `orchestrator.json`; they do not select the isolated `jev_plan` model. The controller makes one bounded Jev Choice request per completed execution stage, with a separate 1,500 ms timeout, no retries, six recent visible messages and a 16,000-character state budget by default. `/jev plan` makes no next-action router call. `/jev status` and completion notices report observed router calls and elapsed routing time.
 
 Automatic plugin policies default off; explicitly configured custom rules and enabled policies can still make additional calls after plugin activation. The normal thinking classifier is skipped while the controller owns a stage. The controller exclusively owns its `session_stop` cycle, so legacy recovery and custom stop-continuation rules cannot extend or resurrect the same run.
 
@@ -105,11 +144,11 @@ Terminal assistant/provider errors pause the controller without routing to compl
 
 The `jev_dispatch` tool accepts natural-language discovery tasks and optional path hints. Enable it with `dispatcher.enabled`; the `/jev dispatcher` command also works as an explicit one-off while automatic policies and the tool remain disabled.
 
-Discovery uses workspace-local file reads, content grep, filename globbing, AST search, and OMP's read-only LSP navigation: symbols, definitions, references, implementations, types, and hover. Software generates bounded actions from query terms, paths, imports, and discovered symbols. Jev selects actions and scores file relevance through typed questions; it does not generate executable code, arbitrary searches, or a prose report.
+Discovery uses workspace-local file reads, content grep, filename globbing, AST search, and OMP's read-only LSP navigation. Natural-language location requests rank files with separate keyword scans, select candidates through typed questions, then verify bounded source windows. Exact-symbol, related-files, and explicitly scoped requests retain the navigation loop. Jev does not generate executable code, arbitrary searches, or a prose report.
 
-Results contain ranked `file:line` locations and retained source evidence. The native terminal panel shows progress, counts, elapsed time, and eight leading locations. Use OMP's expand-tools shortcut (default **Ctrl+O**) for remaining locations, evidence, task outcomes, and warnings.
+The calling model receives a plain-text report capped at 12,000 characters, not the full result JSON. Ranked `file:start-end` blocks coalesce agreeing source ranges, preserve gaps, and mark omissions. Full metadata stays in tool details. The native terminal panel shows progress, counts, elapsed time, and six leading file blocks. Use OMP's expand-tools shortcut (default **Ctrl+O**) for source, remaining locations, task outcomes, and warnings.
 
-Each task ends `TASK_FINISHED`, `NO_PATH`, or `REQUIRE_BIGGER_MODEL`. Budget exhaustion, failed decisions, and cancellation retain partial evidence rather than claiming an exhaustive search. Escalation stops the queue and returns untouched `remainingTasks`; it never spawns a model. This does not replace native todo/subagent orchestration.
+Each task ends `TASK_FINISHED`, `NO_PATH`, or `REQUIRE_BIGGER_MODEL`. Budget exhaustion, failed decisions, and cancellation retain bounded partial evidence; unverified source remains marked unranked. A failed location search cannot finish successfully just because earlier blocks looked relevant. Escalation stops the queue and returns untouched `remainingTasks`; it never spawns a model. These are bounded searches, not exhaustive proof of absence.
 
 Discovery never writes source files or invokes shell commands, MCP tools, skills, or another agent. Paths are confined to the workspace after resolving symlinks. Implicit file scans respect gitignore, skip hidden files, and filter common private-key stores. Explicit file hints may read hidden files inside the workspace: do not supply secret files. Selected repository evidence is sent to the configured TypeSafe endpoint and remains untrusted data.
 
@@ -138,7 +177,7 @@ Defaults: 12 decision steps per task, four actions per batch, 12 offered actions
 
 Read evidence preserves up to 4,096 characters per source line; longer lines are explicitly marked as truncated. Search snippets remain capped at 400 characters. The 1 MiB file-read window and shared evidence budget still apply.
 
-`minReadProbability` controls action selection and file relevance. `minConfidence` and `minProbability` gate accepted stop/escalation choices. When that choice is uncertain, independently accepted read-only actions may gather more evidence. Rejected candidates are deferred until new evidence arrives; an entirely rejected window advances without replaying it. Every decision attempt consumes a step. `maxInvalidChoices` bounds repeated unusable continuation selections.
+`minReadProbability` gates accepted source blocks; a location task needs a block reaching `minProbability` to finish. In the navigation loop, `minConfidence` and `minProbability` gate stop/escalation choices, while independently accepted read-only actions may gather more evidence. Rejected candidates are deferred until new evidence arrives; an entirely rejected window advances without replaying it. Every decision attempt consumes a step. `maxInvalidChoices` bounds repeated unusable continuation selections.
 
 After updating extension code, use `/reload-plugins` or restart OMP. `/jev reload` reloads configuration only.
 

@@ -9,8 +9,15 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { DiscoveryFinding, DiscoveryProgress } from "./discovery.js";
 import type { DispatcherResult } from "./dispatcher.js";
+import {
+	formatElapsed,
+	formatSourceRange,
+	sourceBlockLabel,
+	sourceBlockLines,
+	sourceBlocks,
+} from "./discovery-output.js";
 
-const COLLAPSED_LOCATIONS = 8;
+const COLLAPSED_BLOCKS = 6;
 const COLLAPSED_WARNINGS = 2;
 const LABEL_CHARACTERS = 320;
 const PREVIEW_CHARACTERS = 160;
@@ -45,13 +52,6 @@ function count(value: number): number {
 function quantity(value: number, singular: string): string {
 	const total = count(value);
 	return `${total} ${singular}${total === 1 ? "" : "s"}`;
-}
-
-function elapsed(value: number): string {
-	const milliseconds = count(value);
-	if (milliseconds < 1000) return `${milliseconds} ms`;
-	if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)} s`;
-	return `${Math.floor(milliseconds / 60_000)} min ${Math.floor((milliseconds % 60_000) / 1000)} s`;
 }
 
 function text(
@@ -131,86 +131,37 @@ class BoundedContainer extends Container {
 	}
 }
 
-function findingRank(finding: DiscoveryFinding): number {
-	return (
-		(finding.relevance ?? 0.5) * 100 +
-		(count(finding.line ?? 0) > 0 ? 4 : 0) +
-		(finding.symbol ? 2 : 0) +
-		(finding.text ? 1 : 0)
-	);
-}
-
-function rankedFindings(findings: DiscoveryFinding[]): DiscoveryFinding[] {
-	const unique = new Map<string, DiscoveryFinding>();
-	for (const finding of findings) {
-		const key = JSON.stringify([finding.path, finding.line, finding.symbol]);
-		const previous = unique.get(key);
-		if (!previous || findingRank(finding) > findingRank(previous)) {
-			unique.set(key, finding);
-		}
-	}
-	// Stable ties retain the engine's discovery order; anchored evidence comes first.
-	return [...unique.values()].sort(
-		(left, right) => findingRank(right) - findingRank(left),
-	);
-}
-
 function addFindings(
 	container: Container,
 	findings: DiscoveryFinding[],
 	expanded: boolean,
 	theme: Theme,
 ): void {
-	const visible = expanded ? findings : findings.slice(0, COLLAPSED_LOCATIONS);
-	const more = findings.length - visible.length;
+	const blocks = sourceBlocks(findings);
+	const visible = expanded ? blocks : blocks.slice(0, COLLAPSED_BLOCKS);
+	const more = blocks.length - visible.length;
 	if (more > 0) {
 		container.addChild(
 			text(
-				`${quantity(more, "more location")} available when expanded.`,
+				`${quantity(more, "more file block")} available when expanded.`,
 				theme,
 				"muted",
 			),
 		);
 	}
-	const groups = new Map<string, DiscoveryFinding[]>();
-	for (const finding of visible) {
-		const group = groups.get(finding.path);
-		if (group) group.push(finding);
-		else groups.set(finding.path, [finding]);
-	}
-	for (const [path, group] of groups) {
+	for (const [index, block] of visible.entries()) {
 		container.addChild(new Spacer(1));
-		for (let index = 0; index < group.length; index++) {
-			const finding = group[index]!;
-			const line = count(finding.line ?? 0);
-			const location = `${displayText(path, LABEL_CHARACTERS)}${line > 0 ? `:${line}` : ""}`;
-			const symbol = displayText(finding.symbol, LABEL_CHARACTERS);
+		const label = expanded
+			? sourceBlockLabel(block)
+			: formatSourceRange(block.path, block.segments);
+		container.addChild(
+			text(displayText(label, LABEL_CHARACTERS), theme, "accent", index === 0),
+		);
+		if (!expanded) continue;
+		for (const row of sourceBlockLines(block)) {
 			container.addChild(
-				text(
-					`${location}${symbol ? `  ${symbol}` : ""}`,
-					theme,
-					"accent",
-					index === 0,
-				),
+				text(displayText(row, EVIDENCE_CHARACTERS, true), theme, "toolOutput"),
 			);
-			const snippet = displayText(
-				finding.text,
-				expanded ? EVIDENCE_CHARACTERS : PREVIEW_CHARACTERS,
-				expanded,
-			);
-			if (snippet)
-				container.addChild(
-					text(snippet, theme, expanded ? "toolOutput" : "muted"),
-				);
-			if (expanded) {
-				container.addChild(
-					text(
-						`Source: ${displayText(finding.via, LABEL_CHARACTERS)}`,
-						theme,
-						"dim",
-					),
-				);
-			}
 		}
 	}
 }
@@ -219,6 +170,7 @@ function addOutcomes(
 	container: Container,
 	result: DispatcherResult,
 	theme: Theme,
+	includeEvidence: boolean,
 ): void {
 	for (const outcome of result.results) {
 		container.addChild(new Spacer(1));
@@ -248,11 +200,15 @@ function addOutcomes(
 				text(displayText(outcome.summary, EVIDENCE_CHARACTERS, true), theme),
 			);
 		}
-		for (const evidence of outcome.evidence ?? []) {
-			container.addChild(text("Evidence:", theme, "dim"));
-			container.addChild(
-				text(displayText(evidence, EVIDENCE_CHARACTERS, true), theme),
-			);
+		// Raw outcome evidence repeats the source blocks above; it is only a
+		// fallback when discovery retained no findings at all.
+		if (includeEvidence) {
+			for (const evidence of outcome.evidence ?? []) {
+				container.addChild(text("Evidence:", theme, "dim"));
+				container.addChild(
+					text(displayText(evidence, EVIDENCE_CHARACTERS, true), theme),
+				);
+			}
 		}
 	}
 	if (result.remainingTasks.length > 0) {
@@ -356,7 +312,9 @@ export function renderDispatcherResult(
 		return container;
 	}
 
-	const findings = rankedFindings(details.findings);
+	// Blocks are derived once from result.findings; raw outcome evidence is
+	// not re-rendered alongside them.
+	const findings = details.findings;
 	const unresolved =
 		details.remainingTasks.length > 0 ||
 		details.results.some(
@@ -399,7 +357,7 @@ export function renderDispatcherResult(
 	);
 	container.addChild(
 		text(
-			`${quantity(details.toolCalls, "tool call")} | ${quantity(details.decisions, "decision")} | ${elapsed(details.elapsedMs)}`,
+			`${quantity(details.toolCalls, "tool call")} | ${quantity(details.decisions, "decision")} | ${formatElapsed(details.elapsedMs)}`,
 			theme,
 			"muted",
 		),
@@ -438,12 +396,21 @@ export function renderDispatcherResult(
 		container.addChild(
 			text("No locations found in the searched scope.", theme, "muted"),
 		);
-	if (options.expanded) addOutcomes(container, details, theme);
+	if (options.expanded)
+		addOutcomes(
+			container,
+			details,
+			theme,
+			// Evidence is a fallback; findings already carry the source once.
+			findings.length === 0,
+		);
 	else if (details.results.length > 0 || details.remainingTasks.length > 0) {
 		container.addChild(new Spacer(1));
 		container.addChild(
 			text(
-				"Expand for task summaries, evidence, and remaining work.",
+				findings.length > 0
+					? "Expand for task summaries and remaining work."
+					: "Expand for task summaries, evidence, and remaining work.",
 				theme,
 				"muted",
 			),
@@ -488,7 +455,7 @@ export function renderDispatcherProgress(
 	const position = Math.min(count(progress.taskIndex), total);
 	container.addChild(
 		text(
-			`Task ${position}/${total} | ${quantity(progress.files, "file")} | ${quantity(progress.toolCalls, "tool call")} | ${quantity(progress.decisions, "decision")} | ${elapsed(progress.elapsedMs)}`,
+			`Task ${position}/${total} | ${quantity(progress.files, "file")} | ${quantity(progress.toolCalls, "tool call")} | ${quantity(progress.decisions, "decision")} | ${formatElapsed(progress.elapsedMs)}`,
 			theme,
 			"muted",
 		),

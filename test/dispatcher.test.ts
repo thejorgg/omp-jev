@@ -564,3 +564,167 @@ for (const selectedTool of ["read", "grep"] as const) {
 		);
 	});
 }
+
+test("natural-language location requests return verified source blocks, not raw search dumps", async () => {
+	const h = harness({
+		budget: { maxEvidenceChars: 2000 },
+		files: ["src/login.ts", "docs/login.md"],
+		execute: async (action) =>
+			action.tool === "read"
+				? {
+						text: "1|function showLoginError(error) {\n2|  alert(error.message);\n3|}",
+						locations: [
+							{
+								path: "src/login.ts",
+								line: 1,
+								endLine: 3,
+								text: "1|function showLoginError(error) {\n2|  alert(error.message);\n3|}",
+							},
+						],
+					}
+				: {
+						text: "INCIDENTAL_SEARCH_NOISE".repeat(1000),
+						locations: [
+							{
+								path: "src/login.ts",
+								line: 1,
+								text: "function showLoginError(error) {",
+							},
+						],
+					},
+		decision: (_state, questions) =>
+			Object.fromEntries(
+				Object.entries(questions).map(([id, question]) => {
+					if (question.type !== "choice")
+						return [id, { type: "noul", noul: 0.95 }];
+					const labels = Object.keys(question.criteria);
+					const choice = labels.includes(TASK_FINISHED)
+						? TASK_FINISHED
+						: labels[0];
+					return [
+						id,
+						{
+							type: "choice",
+							choice,
+							confidence: 1,
+							probabilities: Object.fromEntries(
+								labels.map((label) => [label, label === choice ? 1 : 0]),
+							),
+						},
+					];
+				}),
+			),
+	});
+	const result = await h.engine.dispatch({
+		tasks: [
+			{
+				id: "login",
+				description: "Find where native login errors are displayed.",
+			},
+		],
+	});
+	expect(result.status).toBe("finished");
+	expect(result.findings).toContainEqual(
+		expect.objectContaining({
+			path: "src/login.ts",
+			line: 1,
+			endLine: 3,
+			via: "read",
+		}),
+	);
+	expect(result.findings.map((finding) => finding.text).join("\n")).toContain(
+		"alert(error.message)",
+	);
+	expect(
+		result.results.flatMap((outcome) => outcome.evidence).join("\n"),
+	).not.toContain("INCIDENTAL_SEARCH_NOISE");
+});
+
+test("cancelling block verification retains the source already read as provisional", async () => {
+	const controller = new AbortController();
+	const h = harness({
+		execute: async (action) =>
+			action.tool === "read"
+				? {
+						text: "1|function showError(message) { alert(message); }",
+						locations: [{ path: "src/service.ts", line: 1, endLine: 1 }],
+					}
+				: hit("src/service.ts"),
+		decision: (state, questions) => {
+			if ("blocks" in (state as object)) controller.abort();
+			return Object.fromEntries(
+				Object.entries(questions).map(([id, question]) => {
+					if (question.type !== "choice")
+						return [id, { type: "noul", noul: 0.95 }];
+					const labels = Object.keys(question.criteria);
+					return [
+						id,
+						{
+							type: "choice",
+							choice: labels[0],
+							confidence: 1,
+							probabilities: Object.fromEntries(
+								labels.map((label, index) => [label, index === 0 ? 1 : 0]),
+							),
+						},
+					];
+				}),
+			);
+		},
+	});
+	const result = await h.engine.dispatch(
+		{
+			tasks: [
+				{
+					id: "error",
+					description: "Find where native error messages are displayed.",
+				},
+			],
+		},
+		controller.signal,
+	);
+	expect(result.status).toBe("aborted");
+	expect(result.findings[0]?.text).toContain("alert(message)");
+	expect(result.findings[0]?.relevance).toBeUndefined();
+});
+
+test("a location search exhausting its decision budget remains incomplete despite relevant partial source", async () => {
+	const h = harness({
+		budget: { maxStepsPerTask: 2 },
+		execute: async (action) =>
+			action.tool === "read"
+				? {
+						text: `${action.offset ?? 1}|persistInventory();`,
+						locations: [{ path: "src/service.ts", line: action.offset ?? 1 }],
+						nextOffset: action.offset === 1 ? 2 : undefined,
+					}
+				: hit("src/service.ts"),
+		decision: (_state, questions) =>
+			Object.fromEntries(
+				Object.entries(questions).map(([id, question]) => {
+					if (question.type !== "choice")
+						return [id, { type: "noul", noul: 0.75 }];
+					const labels = Object.keys(question.criteria);
+					return [
+						id,
+						{
+							type: "choice",
+							choice: labels[0],
+							confidence: 1,
+							probabilities: Object.fromEntries(
+								labels.map((label, index) => [label, index === 0 ? 1 : 0]),
+							),
+						},
+					];
+				}),
+			),
+	});
+	const result = await h.engine.dispatch({
+		tasks: [
+			{ id: "save", description: "Find where player inventory is saved." },
+		],
+	});
+	expect(result.status).toBe("escalated");
+	expect(result.findings[0]?.text).toContain("persistInventory()");
+	expect(result.results[0].status).toBe(REQUIRE_BIGGER_MODEL);
+});

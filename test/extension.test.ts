@@ -35,6 +35,7 @@ interface FixtureEntry {
 		)[];
 	};
 }
+
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -113,6 +114,8 @@ async function harness(
 		server.stop(true);
 	});
 	await mkdir(join(dir, ".omp"));
+	const { client: clientOverride, ...configOverride } = (options.config ??
+		{}) as { client?: Record<string, unknown> };
 	await writeFile(
 		join(dir, ".omp", "jev.json"),
 		JSON.stringify({
@@ -122,11 +125,12 @@ async function harness(
 			safety: { enabled: true },
 			nativeRules: { enabled: true },
 			recovery: { enabled: true },
+			...configOverride,
 			client: {
 				endpoint: `http://127.0.0.1:${server.port}/v1/systemone`,
 				apiKeyEnv: keyEnv,
+				...clientOverride,
 			},
-			...options.config,
 		}),
 	);
 	if (options.rules)
@@ -157,6 +161,15 @@ async function harness(
 	const switches: string[] = [];
 	const runtimeSettings = Settings.isolated({ "todo.reminders": true });
 	let currentModel = { id: "original", provider: "local", reasoning: true };
+	const switchModel = async (model: { id: string; provider: string }) => {
+		currentModel = {
+			...currentModel,
+			id: model.id,
+			provider: model.provider,
+		};
+		switches.push(model.id);
+		return true;
+	};
 	const api = {
 		typebox,
 		pi: {
@@ -185,15 +198,7 @@ async function harness(
 		},
 		registerMessageRenderer: () => {},
 		setThinkingLevel: (level: string) => levels.push(level),
-		setModel: async (model: { id: string; provider: string }) => {
-			currentModel = {
-				...currentModel,
-				id: model.id,
-				provider: model.provider,
-			};
-			switches.push(model.id);
-			return true;
-		},
+		setModel: switchModel,
 		getThinkingLevel: () => "medium",
 		sendMessage: (message: unknown) => messages.push(message),
 	} as unknown as ExtensionAPI;
@@ -220,11 +225,18 @@ async function harness(
 		model: { id: "test", provider: "local", reasoning: true },
 		models: {
 			current: () => currentModel,
-			resolve: (id: string) => ({ id, provider: "local", reasoning: true }),
+			resolve: (id: string) =>
+				id === "missing"
+					? undefined
+					: { id, provider: "local", reasoning: true },
+		},
+		modelRegistry: {
+			resolver: () => "fixture-key",
 		},
 		isIdle: () => true,
 		sessionManager: {
 			getSessionId: () => "test-session",
+			getCwd: () => dir,
 			getSessionFile: () => undefined,
 			getBranch: () => branch,
 		},
@@ -247,11 +259,15 @@ async function harness(
 		ctx,
 		commands,
 		tools,
+		switchModel: async (id: string) => {
+			await switchModel({ id, provider: "local" });
+		},
 		reminders: () => runtimeSettings.get("todo.reminders"),
 		notices: () => notices,
 		switches: () => switches,
 	};
 }
+
 describe("extension policy consequences", () => {
 	test("disabled plugin leaves native tools, thinking and recovery untouched", async () => {
 		const h = await harness({ config: { enabled: false } });
@@ -452,15 +468,17 @@ describe("extension policy consequences", () => {
 	});
 
 	test("settled orchestration keeps suppressing recovery until a real user delivery clears it", async () => {
-		const h = await harness({ choices: { recovery: "rescuer" } });
-		await h.commands.jev("plan draft the migration", h.ctx);
+		const h = await harness({
+			choices: { next_action: "ask_user", recovery: "rescuer" },
+		});
+		await h.commands.jev("run draft the migration", h.ctx);
 		const stopEvent = {
 			stop_hook_active: false,
 			signal: new AbortController().signal,
 		};
-		// The plan-only run settles at its first stop boundary.
+		// The routed run settles when the router asks the user to decide.
 		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
-		expect(h.notices().join("\n")).toContain("plan ready");
+		expect(h.notices().join("\n")).toContain("paused");
 		// Later stop boundaries stay suppressed: legacy recovery must not fire.
 		expect(await h.run("session_stop", stopEvent)).toBeUndefined();
 		// Delivering the orchestrator's own stage guidance does not clear the settlement.
@@ -649,5 +667,112 @@ describe("extension policy consequences", () => {
 		expect(h.requests).toEqual([]);
 		expect(h.messages).toEqual([]);
 		expect(h.notices().at(-1)).toMatch(/description/);
+	});
+
+	test("jev_plan honours a pre-cancelled caller signal without planning work", async () => {
+		const h = await harness();
+		const result = await h.tools.jev_plan.execute(
+			"t",
+			{ goal: "Fix it" },
+			AbortSignal.abort(),
+			undefined,
+			h.ctx,
+		);
+		const details = result.details as {
+			status: string;
+			model: string;
+			toolCalls: number;
+		};
+		expect(details.status).toBe("aborted");
+		expect(details.model).toBe("local/original");
+		expect(details.toolCalls).toBe(0);
+		expect(JSON.stringify(result)).toContain("Plan aborted");
+		// Planning runs on the selected LLM; the TypeSafe classifier is unused.
+		expect(h.requests).toHaveLength(0);
+	});
+
+	test("jev_plan captures the model before awaiting configuration", async () => {
+		const h = await harness();
+		const pending = h.tools.jev_plan.execute(
+			"t",
+			{ goal: "Fix it" },
+			AbortSignal.abort(),
+			undefined,
+			h.ctx,
+		);
+		await h.switchModel("other-model");
+		const result = await pending;
+		expect((result.details as { model: string }).model).toBe("local/original");
+	});
+
+	test("jev_plan requires the enabled plugin but not the TypeSafe key", async () => {
+		const disabled = await harness({ config: { enabled: false } });
+		await expect(
+			disabled.tools.jev_plan.execute(
+				"t",
+				{ goal: "Fix it" },
+				AbortSignal.abort(),
+				undefined,
+				disabled.ctx,
+			),
+		).rejects.toThrow(/inactive/);
+
+		const h = await harness({
+			config: { client: { apiKeyEnv: "OMP_JEV_TEST_UNSET_KEY" } },
+		});
+		const result = await h.tools.jev_plan.execute(
+			"t",
+			{ goal: "Fix it" },
+			AbortSignal.abort(),
+			undefined,
+			h.ctx,
+		);
+		expect((result.details as { status: string }).status).toBe("aborted");
+		expect(h.requests).toHaveLength(0);
+	});
+
+	test("failed command planning publishes an incomplete result and sets no run goal", async () => {
+		const h = await harness();
+		// The fixture provider cannot serve model calls, so the real planner
+		// reports an honest incomplete result without network access.
+		await h.commands.jev("plan Fix the bug", h.ctx);
+		const published = JSON.stringify(h.messages);
+		expect(published).toContain('"customType":"jev-planner"');
+		expect(published).toContain("Plan incomplete");
+		expect(published).toContain("local/original");
+		// An incomplete plan is not an executable goal for /jev run.
+		await h.commands.jev("run", h.ctx);
+		expect(h.switches()).toEqual([]);
+		expect(h.notices().join("\n")).toMatch(/goal/);
+	});
+
+	test("moving the session during planning suppresses the old workspace result", async () => {
+		const h = await harness();
+		let liveCwd = h.ctx.cwd;
+		Object.defineProperty(h.ctx.sessionManager, "getCwd", {
+			value: () => liveCwd,
+		});
+		h.ctx.ui.setWidget = (_name, widget) => {
+			if (widget !== undefined) liveCwd = join(h.ctx.cwd, "moved");
+		};
+		await h.commands.jev("plan Inspect the old workspace", h.ctx);
+		expect(liveCwd).not.toBe(h.ctx.cwd);
+		expect(h.messages).toEqual([]);
+	});
+
+	test("/jev plan validates JSON and model selectors before planning starts", async () => {
+		const h = await harness();
+		await h.commands.jev('plan {"goal": 42}', h.ctx);
+		expect(h.messages).toHaveLength(0);
+		expect(h.notices().at(-1)).toMatch(/goal/);
+		await h.commands.jev('plan {"goal":"Fix it","model":"missing"}', h.ctx);
+		expect(h.messages).toHaveLength(0);
+		expect(h.notices().join("\n")).toMatch(/missing/);
+	});
+
+	test("/jev plan stop reports when nothing is running", async () => {
+		const h = await harness();
+		await h.commands.jev("plan stop", h.ctx);
+		expect(h.notices().at(-1)).toMatch(/No Jev planning/);
 	});
 });

@@ -198,17 +198,24 @@ test("controller registration is inert until an explicit start", () => {
 	assert.equal(h.requests.length, 0);
 	assert.equal(h.messages.length, 0);
 });
-test("plan mode uses the planner once and does not auto-execute", async () => {
+test("rememberGoal hands the command goal to the next explicit run", async () => {
 	const h = harness();
-	await h.controller.start(h.ctx, "Fix the bug", true);
-	assert.equal(h.state.model.id, "planner");
-	assert.equal(await h.controller.onStop(h.ctx, h.stopEvent()), undefined);
-	assert.equal(h.requests.length, 0);
-	assert.equal(h.state.model.id, "original");
-	assert.equal(h.state.thinking, "medium");
+	h.controller.rememberGoal(h.ctx, "   ");
+	await assert.rejects(() => h.controller.start(h.ctx, ""), /goal/);
+	h.controller.rememberGoal(h.ctx, "Fix the bug");
+	const other = {
+		...h.ctx,
+		sessionManager: {
+			...h.ctx.sessionManager,
+			getSessionId: () => "session-2",
+		},
+	};
+	// Session identity guards the remembered goal: another session never sees it.
+	await assert.rejects(() => h.controller.start(other, ""), /goal/);
 	await h.controller.start(h.ctx, "");
-	assert.equal(h.messages.length, 2);
+	assert.equal(h.state.model.id, "planner");
 	await h.controller.stop(h.ctx, "test cleanup");
+	assert.equal(h.state.model.id, "original");
 });
 test("plan -> strong implementation -> review -> done uses only Jev at boundaries", async () => {
 	const h = harness();
@@ -546,8 +553,8 @@ test("configured auto is restored rather than its effective effort", async () =>
 		configured: "auto",
 		thinkingLevel: "medium",
 	});
-	await h.controller.start(h.ctx, "goal", true);
-	await h.controller.onStop(h.ctx, h.stopEvent());
+	await h.controller.start(h.ctx, "goal");
+	await h.controller.stop(h.ctx, "test cleanup");
 	assert.equal(h.state.configured, "auto");
 });
 
@@ -555,12 +562,11 @@ test("without selector metadata orchestration preserves host thinking mode", asy
 	const h = harness();
 	h.branch.splice(0, 1);
 	h.state.configured = "auto";
-	await h.controller.start(h.ctx, "goal", true);
+	await h.controller.start(h.ctx, "goal");
 	assert.equal(h.state.configured, "auto");
-	await h.controller.onStop(h.ctx, h.stopEvent());
+	await h.controller.stop(h.ctx, "test cleanup");
 	assert.equal(h.state.configured, "auto");
 });
-
 test("model defaults do not erase a manual thinking change while releasing ownership", async () => {
 	const h = harness();
 	h.select(async () => {

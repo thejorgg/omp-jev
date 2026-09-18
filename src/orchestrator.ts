@@ -47,12 +47,12 @@ interface ActiveRun {
 	selectedModel?: Model;
 	selectedThinking?: ThinkingSelection;
 	controller: AbortController;
-	planningOnly: boolean;
 	deciding: boolean;
 	stageFailed: boolean;
 	calls: number;
 	routingMs: number;
 }
+
 const sessionKey = (ctx: ExtensionContext): string =>
 	`${ctx.sessionManager.getSessionId()}\0${ctx.cwd}`;
 const sameModel = (a: Model | undefined, b: Model | undefined): boolean =>
@@ -85,7 +85,15 @@ export class JevOrchestrator {
 		const run = this.runs.get(sessionKey(ctx));
 		return run
 			? `Orchestrator: ${run.state.stage}, stage ${run.state.steps}/${run.config.maxSteps}, ${run.calls} router calls, ${Math.round(run.routingMs)}ms routing total.`
-			: "Orchestrator: idle (explicit /jev plan or /jev run).";
+			: "Orchestrator: idle (explicit /jev run).";
+	}
+	/** Record the goal of a successful command-owned plan so a later bare
+	 * /jev run executes the same goal. Scoped to one session identity; the
+	 * caller must have validated command ownership first — tool-side planning
+	 * never reaches this, so parallel tool plans cannot overwrite a user goal. */
+	rememberGoal(ctx: ExtensionContext, goal: string): void {
+		const trimmed = goal.trim();
+		if (trimmed) this.goals.set(sessionKey(ctx), trimmed);
 	}
 	private serialize<T>(fn: () => Promise<T>): Promise<T> {
 		const pending = this.modelQueue.then(fn, fn);
@@ -240,7 +248,6 @@ export class JevOrchestrator {
 	async start(
 		ctx: ExtensionCommandContext,
 		suppliedGoal: string,
-		planningOnly = false,
 	): Promise<void> {
 		if (
 			!ctx.isIdle() ||
@@ -314,7 +321,6 @@ export class JevOrchestrator {
 				.getBranch()
 				.some((entry) => entry.type === "thinking_level_change"),
 			controller: new AbortController(),
-			planningOnly,
 			deciding: false,
 			stageFailed: false,
 			calls: 0,
@@ -339,9 +345,7 @@ export class JevOrchestrator {
 			);
 			this.deps.notice(
 				ctx,
-				planningOnly
-					? "Jev planning only; discuss the plan, then use /jev run to execute the same goal."
-					: "Jev run started. /jev stop cancels routing; interrupt OMP to stop an in-flight worker.",
+				"Jev run started. /jev stop cancels routing; interrupt OMP to stop an in-flight worker.",
 			);
 		} catch (error) {
 			await this.stop(ctx, "stopped during startup");
@@ -385,10 +389,6 @@ export class JevOrchestrator {
 				assistant.errorMessage)
 		) {
 			await this.stop(ctx, "paused after worker failure; no automatic retry");
-			return;
-		}
-		if (run.planningOnly) {
-			await this.stop(ctx, "plan ready; review it before /jev run");
 			return;
 		}
 		if (

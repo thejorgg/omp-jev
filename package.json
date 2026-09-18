@@ -1,6 +1,6 @@
 {
 	"name": "omp-jev",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "TypeSafe Jev decision routing and configurable rules for Oh My Pi",
 	"type": "module",
 	"license": "MIT",

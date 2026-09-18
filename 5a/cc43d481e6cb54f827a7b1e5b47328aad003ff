@@ -1,0 +1,14 @@
+package.json
+  h_76aab65d18d7a3 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5acc43d481e6cb54f827a7b1e5b47328aad003ff",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

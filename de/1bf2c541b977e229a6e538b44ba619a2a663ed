@@ -1,0 +1,24 @@
+README.md
+  h_76aab65d18d7a3 145-147
+examples/jev.json
+  h_76aab65d18d7a3 55
+src/config.ts
+  h_76aab65d18d7a3 56
+src/editor.ts
+  h_76aab65d18d7a3 45,55-61
+src/extension.ts
+  h_76aab65d18d7a3 9,62,173-182,350,383-385,797,914,1136,1192-1211,1236
+test/extension.test.ts
+  h_76aab65d18d7a3 55-60,160,192-195,197,211-214,277,538,565-617
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "de1bf2c541b977e229a6e538b44ba619a2a663ed",
+  "prompts": {},
+  "humans": {
+    "h_76aab65d18d7a3": {
+      "author": "Jorge G <the@jor.gg>"
+    }
+  }
+}

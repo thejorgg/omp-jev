@@ -52,6 +52,12 @@ async function harness(
 ) {
 	const dir = await mkdtemp(join(tmpdir(), "omp-jev-test-"));
 	cleanup.push(() => rm(dir, { recursive: true, force: true }));
+	const previousConfigDir = process.env.OMP_JEV_CONFIG_DIR;
+	process.env.OMP_JEV_CONFIG_DIR = join(dir, "config");
+	cleanup.push(() => {
+		if (previousConfigDir === undefined) delete process.env.OMP_JEV_CONFIG_DIR;
+		else process.env.OMP_JEV_CONFIG_DIR = previousConfigDir;
+	});
 	const keyEnv = `OMP_JEV_TEST_${crypto.randomUUID().replaceAll("-", "")}`;
 	process.env[keyEnv] = "test-secret";
 	cleanup.push(() => {
@@ -151,6 +157,7 @@ async function harness(
 		}
 	> = {};
 	const handlers: Record<string, Handler> = {};
+	let activeTools = ["read", "write"];
 	const commands: Record<
 		string,
 		(args: string, ctx: ExtensionCommandContext) => Promise<unknown>
@@ -182,8 +189,12 @@ async function harness(
 			handlers[name] = fn;
 		},
 		registerTool: (spec: unknown) => {
-			const tool = spec as { name: string } & (typeof tools)[string];
+			const tool = spec as {
+				name: string;
+				defaultInactive?: boolean;
+			} & (typeof tools)[string];
 			tools[tool.name] = tool;
+			if (!tool.defaultInactive) activeTools.push(tool.name);
 		},
 		registerCommand: (
 			name: string,
@@ -197,6 +208,10 @@ async function harness(
 			) => Promise<unknown>;
 		},
 		registerMessageRenderer: () => {},
+		getActiveTools: () => [...activeTools],
+		setActiveTools: async (names: string[]) => {
+			activeTools = [...names];
+		},
 		setThinkingLevel: (level: string) => levels.push(level),
 		setModel: switchModel,
 		getThinkingLevel: () => "medium",
@@ -259,6 +274,7 @@ async function harness(
 		ctx,
 		commands,
 		tools,
+		activeTools: () => [...activeTools],
 		switchModel: async (id: string) => {
 			await switchModel({ id, provider: "local" });
 		},
@@ -519,9 +535,8 @@ describe("extension policy consequences", () => {
 		expect(h.notices().at(-1)).toContain("Orchestrator: idle");
 	});
 
-	test("jev_dispatch reads workspace files and finishes the queue", async () => {
+	test("jev_dispatch is available by default and reads workspace files", async () => {
 		const h = await harness({
-			config: { dispatcher: { enabled: true } },
 			choices: { next_action: "EXECUTE_SELECTED" },
 		});
 		await writeFile(join(h.ctx.cwd, "a.ts"), "export const alpha = 1;\n");
@@ -545,6 +560,59 @@ describe("extension policy consequences", () => {
 				result.details as { results: Array<{ evidence: string[] }> }
 			).results[0].evidence.join("\n"),
 		).toContain("export const alpha = 1;");
+	});
+
+	test("dispatcher exposure follows explicit configuration and session toggles", async () => {
+		const h = await harness({ config: { dispatcher: { enabled: false } } });
+		const path = join(h.ctx.cwd, ".omp", "jev.json");
+		const config = JSON.parse(await Bun.file(path).text());
+		expect(h.activeTools()).not.toContain("jev_dispatch");
+		expect(h.activeTools()).toContain("read");
+		delete config.dispatcher;
+		await writeFile(path, JSON.stringify(config));
+		await h.commands.jev("reload", h.ctx);
+		expect(h.activeTools()).toContain("jev_dispatch");
+		await h.commands.jev("disable", h.ctx);
+		expect(h.activeTools()).not.toContain("jev_dispatch");
+		await h.commands.jev("enable", h.ctx);
+		expect(h.activeTools()).toContain("jev_dispatch");
+		config.dispatcher = { enabled: false };
+		await writeFile(path, JSON.stringify(config));
+		await h.commands.jev("reload", h.ctx);
+		expect(h.activeTools()).not.toContain("jev_dispatch");
+		expect(h.activeTools()).toContain("write");
+	});
+
+	test("config editor exposes missing dispatcher without changing safety or saving on cancel", async () => {
+		const h = await harness({ config: { safety: { enabled: false } } });
+		const path = join(h.ctx.cwd, ".omp", "jev.json");
+		const original = await Bun.file(path).text();
+		let shown:
+			| { dispatcher?: { enabled?: boolean }; safety?: { enabled?: boolean } }
+			| undefined;
+		Object.assign(h.ctx, { mode: "tui" });
+		Object.assign(h.ctx.ui, {
+			editor: async (_title: string, text: string) => {
+				shown = JSON.parse(text);
+				return undefined;
+			},
+		});
+		await h.commands.jev("config project", h.ctx);
+		expect(shown?.dispatcher?.enabled).toBe(true);
+		expect(shown?.safety?.enabled).toBe(false);
+		expect(await Bun.file(path).text()).toBe(original);
+		Object.assign(h.ctx.ui, {
+			editor: async (_title: string, text: string) => {
+				const edited = JSON.parse(text);
+				edited.dispatcher.enabled = false;
+				return JSON.stringify(edited);
+			},
+		});
+		await h.commands.jev("config project", h.ctx);
+		expect(h.activeTools()).not.toContain("jev_dispatch");
+		const saved = JSON.parse(await Bun.file(path).text());
+		expect(saved.dispatcher.enabled).toBe(false);
+		expect(saved.safety.enabled).toBe(false);
 	});
 
 	test("jev_dispatch refuses paths outside the workspace", async () => {

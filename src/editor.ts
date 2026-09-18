@@ -42,6 +42,7 @@ export async function editDocument(
 	path: string,
 	initial: unknown,
 	validate: (value: unknown) => unknown,
+	prepare?: (value: unknown) => unknown | Promise<unknown>,
 ): Promise<boolean> {
 	if (ctx.mode !== "tui") {
 		if (ctx.hasUI)
@@ -51,6 +52,13 @@ export async function editDocument(
 	}
 	const original = await readOptional(path);
 	let text = original ?? `${JSON.stringify(initial, null, 2)}\n`;
+	if (prepare) {
+		try {
+			text = `${JSON.stringify(await prepare(JSON.parse(text)), null, 2)}\n`;
+		} catch {
+			// Keep malformed documents editable so the user can repair them.
+		}
+	}
 	while (true) {
 		const edited = await ctx.ui.editor(
 			`Jev: ${path} (Ctrl+G: $VISUAL/$EDITOR)`,

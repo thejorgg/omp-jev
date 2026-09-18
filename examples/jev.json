@@ -52,7 +52,7 @@
 		"maxContinuations": 2
 	},
 	"dispatcher": {
-		"enabled": false,
+		"enabled": true,
 		"timeoutMs": 5000,
 		"minConfidence": 0.75,
 		"minProbability": 0.7,

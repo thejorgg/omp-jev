@@ -142,7 +142,9 @@ Terminal assistant/provider errors pause the controller without routing to compl
 
 ## Read-only dispatcher (`jev_dispatch`)
 
-The `jev_dispatch` tool accepts natural-language discovery tasks and optional path hints. Enable it with `dispatcher.enabled`; the `/jev dispatcher` command also works as an explicit one-off while automatic policies and the tool remain disabled.
+The `jev_dispatch` tool accepts natural-language discovery tasks and optional path hints. `dispatcher.enabled` defaults to `true`, including in older configs that omit it. The tool is exposed only while Jev is active and the dispatcher is enabled; setting `dispatcher.enabled: false` removes it from the model's available tools. Session enable/disable, switching sessions, and config reloads update tool availability. The `/jev dispatcher` command remains an explicit one-off even when the tool is disabled.
+
+`/jev config` always displays a dispatcher entry for valid main configs, preserving explicit settings and the selected scope's effective enabled value. Cancelling leaves the file unchanged; saving persists the entry. This is independent of `safety.enabled`.
 
 Discovery uses workspace-local file reads, content grep, filename globbing, AST search, and OMP's read-only LSP navigation. Natural-language location requests rank files with separate keyword scans, select candidates through typed questions, then verify bounded source windows. Exact-symbol, related-files, and explicitly scoped requests retain the navigation loop. Jev does not generate executable code, arbitrary searches, or a prose report.
 

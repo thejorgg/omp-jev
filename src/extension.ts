@@ -6,7 +6,7 @@ import type {
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { matchesKey } from "@oh-my-pi/pi-tui";
 import { evaluate, validateQuestion } from "./client.js";
-import { loadConfig, loadRules } from "./config.js";
+import { loadConfig, loadRules, parseConfig } from "./config.js";
 import {
 	hasActionableTodos,
 	makeState,
@@ -59,6 +59,7 @@ import type {
 	RuleEvent,
 	RuleMatch,
 } from "./types.js";
+import { isRecord } from "./guards.js";
 
 interface Session {
 	config: JevConfig;
@@ -169,6 +170,16 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	const enabled = (session: Session) =>
 		(enabledOverride ?? session.config.enabled) &&
 		Boolean(process.env[session.config.client.apiKeyEnv]);
+	const syncDispatcher = async (session: Session): Promise<void> => {
+		const active = pi.getActiveTools();
+		const available = enabled(session) && session.config.dispatcher.enabled;
+		if (active.includes("jev_dispatch") === available) return;
+		await pi.setActiveTools(
+			available
+				? [...active, "jev_dispatch"]
+				: active.filter((name) => name !== "jev_dispatch"),
+		);
+	};
 	const notice = (ctx: ExtensionContext, text: string, error = false): void => {
 		if (ctx.hasUI) ctx.ui.notify(text, error ? "warning" : "info");
 		else console.error(text);
@@ -336,6 +347,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		try {
 			const session = await get(ctx);
 			syncReminders(session);
+			await syncDispatcher(session);
 			if (
 				(enabledOverride ?? session.config.enabled) &&
 				!process.env[session.config.client.apiKeyEnv]
@@ -368,7 +380,9 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		for (const controller of dispatches.values()) controller.abort();
 		abortAllCommandPlans();
 		restoreReminders();
-		syncReminders(await get(ctx));
+		const session = await get(ctx);
+		syncReminders(session);
+		await syncDispatcher(session);
 	});
 	pi.on("turn_start", async (_event, ctx) => {
 		if (enabledOverride !== false) (await get(ctx)).turn++;
@@ -780,6 +794,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "jev_dispatch",
 		label: "Jev discovery",
+		defaultInactive: true,
 		description:
 			"Find where to edit code or collect files related to a concept or symbol. Pass tasks with natural-language descriptions and optional path hints. Jev selects batched local read, grep, glob, AST search, and LSP symbols/definitions/references/implementations. Returns file:line findings, retained evidence and explicit partial results when budgets or capabilities limit discovery. tree optionally supplies file candidates instead of inventory. Read-only: no shell, edits, MCP or automatic model spawning. REQUIRE_BIGGER_MODEL returns control with evidence; decide whether a real subagent is needed rather than retrying blindly.",
 		parameters: dispatcherParameters,
@@ -896,6 +911,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 		};
 		sessions.set(key(ctx), Promise.resolve(next));
 		syncReminders(next);
+		await syncDispatcher(next);
 		return next;
 	};
 	pi.registerCommand("jev", {
@@ -1117,6 +1133,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 					await orchestrator.stop(ctx, "disabled");
 					enabledOverride = false;
 					restoreReminders();
+					await syncDispatcher(await get(ctx));
 					output(
 						ctx,
 						"Jev disabled for this session. Edit /jev config to persist.",
@@ -1172,6 +1189,26 @@ export default function jevExtension(pi: ExtensionAPI): void {
 								path,
 								initial,
 								documentValidator(selected),
+								selected === "main"
+									? async (value) => {
+											parseConfig(value);
+											if (!isRecord(value)) return value;
+											const config = await loadConfig(
+												target === "global"
+													? locations.config.slice(0, -1)
+													: locations.config,
+											);
+											return {
+												...value,
+												dispatcher: {
+													enabled: config.dispatcher.enabled,
+													...(isRecord(value.dispatcher)
+														? value.dispatcher
+														: {}),
+												},
+											};
+										}
+									: undefined,
 							)) || saved;
 					}
 					if (saved) {
@@ -1196,6 +1233,7 @@ export default function jevExtension(pi: ExtensionAPI): void {
 				if (command === "enable") {
 					enabledOverride = true;
 					syncReminders(session);
+					await syncDispatcher(session);
 					output(
 						ctx,
 						`Jev enabled for this session. Edit /jev config to persist. Active: ${enabled(session)}.`,

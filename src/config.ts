@@ -53,7 +53,7 @@ export const DEFAULT_CONFIG: JevConfig = {
 		minProbability: 0.75,
 		maxContinuations: 2,
 	},
-	dispatcher: { ...DEFAULT_DISPATCHER_CONFIG, enabled: false },
+	dispatcher: { ...DEFAULT_DISPATCHER_CONFIG, enabled: true },
 };
 
 type LeafParser = (value: unknown, path: string) => unknown;

@@ -199,7 +199,7 @@ describe("response validation fails closed", () => {
 					},
 				}),
 			);
-		const boundary = respond({ billing: 0, technical: 0.995 });
+		const boundary = respond({ billing: 0, technical: 0.99 });
 		try {
 			const result = await evaluate(config(boundary.endpoint), "s", {
 				team: CHOICE,
@@ -207,13 +207,13 @@ describe("response validation fails closed", () => {
 			expect(result.answers.team).toEqual({
 				type: "choice",
 				choice: "technical",
-				probabilities: { billing: 0, technical: 0.995 },
+				probabilities: { billing: 0, technical: 0.99 },
 				confidence: 0.5,
 			});
 		} finally {
 			boundary.stop();
 		}
-		const drifted = respond({ billing: 0.05, technical: 0.9 });
+		const drifted = respond({ billing: 0, technical: 0.989 });
 		try {
 			await expect(
 				evaluate(config(drifted.endpoint), "s", { team: CHOICE }),

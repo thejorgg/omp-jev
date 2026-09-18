@@ -146,7 +146,8 @@ function probDistribution(
 		out[key] = prob(value[key], `${where} probabilities["${key}"]`);
 		sum += out[key];
 	}
-	if (Math.abs(sum - 1) > PROB_SUM_TOLERANCE) {
+	// Decimal probabilities can accumulate a few ulps at the inclusive boundary.
+	if (Math.abs(sum - 1) > PROB_SUM_TOLERANCE + Number.EPSILON * keys.length) {
 		fail(
 			`${where} probabilities must sum to 1 within ${PROB_SUM_TOLERANCE} (got ${sum})`,
 		);
